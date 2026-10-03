@@ -1,6 +1,6 @@
 # ☁️ CloudVault
 
-A full-stack cloud file storage and collaboration platform for securely storing, organizing, managing, and sharing files.
+A full-stack cloud file storage and collaboration platform for securely storing, organizing, managing, and sharing files. Built with object storage, relational data management, secure authentication, and asynchronous background processing.
 
 > **Project Status:** 🚧 In Development
 
@@ -14,53 +14,23 @@ A full-stack cloud file storage and collaboration platform for securely storing,
 - 🤝 **File Sharing** — Share files with users, manage permissions, and create public/expiring links
 - 🗑️ **Trash & Recovery** — Soft deletion, restoration, and permanent deletion
 - 🕐 **File Versioning** — Maintain, download, and restore previous file versions
-- 🔎 **Search** — Search files and folders by relevant metadata
+- 🔎 **Search** — Search files and folders by filename, type, folder, date, and size
 - 📊 **Storage Dashboard** — Track storage usage, file counts, folder counts, and file types
-- ⚙️ **Background Processing** — Handle tasks such as metadata extraction, thumbnails, checksums, and cleanup through background workers
+- ⚙️ **Background Processing** — Handle metadata extraction, thumbnails, checksums, and cleanup through background workers
 - 📝 **Activity Tracking** — Record important file and sharing actions
 
 ---
 
 ## 🛠️ Tech Stack
 
-### Frontend
-
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-
-### Backend
-
-- Node.js
-- Express.js
-- TypeScript
-- REST API
-- Swagger / OpenAPI
-
-### Database & Storage
-
-- PostgreSQL
-- Prisma ORM
-- AWS S3
-- MinIO for local development
-
-### Caching & Background Processing
-
-- Redis
-- BullMQ
-
-### DevOps & Deployment
-
-- Docker
-- Docker Compose
-- GitHub Actions
-- Nginx
-
-### Testing
-
-- Jest
-- Supertest
+| Category | Technologies |
+|---|---|
+| **Frontend** | Next.js, React, TypeScript, Tailwind CSS |
+| **Backend** | Node.js, Express.js, TypeScript, REST API, Swagger / OpenAPI |
+| **Database & Storage** | PostgreSQL, Prisma ORM, AWS S3, MinIO |
+| **Caching & Background Processing** | Redis, BullMQ |
+| **DevOps & Deployment** | Docker, Docker Compose, GitHub Actions, Nginx |
+| **Testing** | Jest, Supertest |
 
 ---
 
@@ -330,7 +300,3 @@ GitHub Actions can automate testing, Docker image builds, and deployment.
 ## 📄 License
 
 This project is intended for educational and portfolio purposes.
-
-```text
-MIT License
-```
