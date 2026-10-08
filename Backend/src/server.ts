@@ -1,6 +1,8 @@
+import "dotenv/config";
 import app from "./app.js";
-import { env } from "./config/env.js";
 
-app.listen(env.PORT, () => {
-  console.log(`CloudVault API running on port ${env.PORT}`);
+const PORT = Number(process.env.PORT) || 8000;
+
+app.listen(PORT, () => {
+  console.log(`CloudVault API running on port ${PORT}`);
 });

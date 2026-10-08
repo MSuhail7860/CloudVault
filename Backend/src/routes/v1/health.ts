@@ -1,11 +1,15 @@
 import { Router } from "express";
+import { prisma } from "../../config/database.js";
 
 const router = Router();
 
-router.get("/", (_req, res) => {
-  res.status(200).json({
+router.get("/", async (_req, res) => {
+  await prisma.$queryRaw`SELECT 1`;
+
+  res.json({
     status: "ok",
     service: "CloudVault API",
+    database: "connected",
   });
 });
 
