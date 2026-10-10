@@ -8,13 +8,17 @@ datasource db {
 }
 
 model User {
-  id           String         @id @default(uuid())
-  email        String         @unique
-  passwordHash String
-  name         String?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  name          String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
   refreshTokens RefreshToken[]
+  files         File[]
+  folders       Folder[]
+  shareLinks    ShareLink[]    @relation("ShareLinkCreator")
 }
 
 model RefreshToken {
@@ -28,5 +32,62 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+model Folder {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parent       Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Folder[] @relation("FolderHierarchy")
+  files        File[]
+
+  @@index([ownerId])
+  @@index([parentId])
+  @@index([ownerId, parentId])
+}
+
+model File {
+  id           String   @id @default(uuid())
+  name         String
+  originalName String
+  storageKey   String   @unique
+  mimeType     String
+  size         BigInt
+  ownerId      String
+  folderId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  owner      User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  folder     Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shareLinks ShareLink[]
+
+  @@index([ownerId])
+  @@index([folderId])
+  @@index([ownerId, folderId])
+  @@index([ownerId, name])
+}
+
+model ShareLink {
+  id          String    @id @default(uuid())
+  tokenHash   String    @unique
+  fileId      String
+  createdById String
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  file      File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  createdBy User @relation("ShareLinkCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([createdById])
   @@index([expiresAt])
 }
