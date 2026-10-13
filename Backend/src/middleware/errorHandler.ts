@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import multer from "multer";
 import { AppError } from "../utils/AppError.js";
 
 type BodyParserError = SyntaxError & {
@@ -10,7 +11,7 @@ export const errorHandler = (
   err: Error,
   _req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): void => {
   if (res.headersSent) {
     next(err);
@@ -29,9 +30,21 @@ export const errorHandler = (
         success: false,
         message: "Invalid JSON in request body",
       });
-
       return;
     }
+  }
+
+  // Handle Multer upload errors.
+  if (err instanceof multer.MulterError) {
+    const isTooLarge = err.code === "LIMIT_FILE_SIZE";
+
+    res.status(isTooLarge ? 413 : 400).json({
+      success: false,
+      message: isTooLarge
+        ? "File size cannot exceed 10 MB"
+        : err.message,
+    });
+    return;
   }
 
   // Handle known application errors.
@@ -46,7 +59,6 @@ export const errorHandler = (
         ? err.message
         : "Internal server error",
     });
-
     return;
   }
 

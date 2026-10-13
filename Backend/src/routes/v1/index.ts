@@ -2,6 +2,8 @@ import { Router } from "express";
 import healthRouter from "./health.js";
 import authRouter from "./auth.js";
 import foldersRouter from "./folders.js";
+import { storageHealth } from "../../controllers/storageController.js";
+import filesRouter from "./files.js";
 
 const router = Router();
 
@@ -14,5 +16,9 @@ router.get("/", (_req, res) => {
 router.use("/health", healthRouter);
 router.use("/auth", authRouter);
 router.use("/folders", foldersRouter);
+router.use("/files", filesRouter);
+
+// Temporary object storage connection test
+router.get("/storage/health", storageHealth);
 
 export default router;
