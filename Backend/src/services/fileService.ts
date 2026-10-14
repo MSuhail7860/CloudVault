@@ -99,3 +99,39 @@ export const uploadFile = async ({
     throw error;
   }
 };
+
+
+interface ListFilesInput {
+  ownerId: string;
+  folderId?: string | null;
+}
+
+export const listFiles = async ({
+  ownerId,
+  folderId,
+}: ListFilesInput) => {
+  const files = await prisma.file.findMany({
+    where: {
+      ownerId,
+      folderId: folderId ?? null,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    select: {
+      id: true,
+      name: true,
+      originalName: true,
+      mimeType: true,
+      size: true,
+      folderId: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return files.map((file) => ({
+    ...file,
+    size: file.size.toString(),
+  }));
+};
