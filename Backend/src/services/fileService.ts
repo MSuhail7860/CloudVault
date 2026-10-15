@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../config/database.js";
 import { AppError } from "../utils/AppError.js";
-import { uploadObject, deleteObject } from "./storageService.js";
+import {
+  uploadObject,
+  downloadObject,
+  deleteObject,
+} from "./storageService.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -58,7 +62,7 @@ export const uploadFile = async ({
     }
   }
 
-  // Never use the user-supplied filename as the storage key.
+  // Use a random storage key instead of the supplied filename.
   const storageKey = `${ownerId}/${randomUUID()}`;
 
   await uploadObject({
@@ -100,7 +104,6 @@ export const uploadFile = async ({
   }
 };
 
-
 interface ListFilesInput {
   ownerId: string;
   folderId?: string | null;
@@ -134,4 +137,45 @@ export const listFiles = async ({
     ...file,
     size: file.size.toString(),
   }));
+};
+
+interface GetFileForDownloadInput {
+  fileId: string;
+  ownerId: string;
+}
+
+export const getFileForDownload = async ({
+  fileId,
+  ownerId,
+}: GetFileForDownloadInput) => {
+  // Check ownership before accessing the storage object.
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+    },
+    select: {
+      id: true,
+      originalName: true,
+      mimeType: true,
+      size: true,
+      storageKey: true,
+    },
+  });
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  const object = await downloadObject(file.storageKey);
+
+  return {
+    file: {
+      id: file.id,
+      originalName: file.originalName,
+      mimeType: file.mimeType,
+      size: file.size.toString(),
+    },
+    object,
+  };
 };

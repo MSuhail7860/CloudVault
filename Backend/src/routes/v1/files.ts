@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   uploadFile,
   listFiles,
+  downloadFile,
 } from "../../controllers/fileController.js";
 import { authenticate } from "../../middleware/authMiddleware.js";
 import { upload } from "../../middleware/uploadMiddleware.js";
@@ -16,5 +17,8 @@ router.get("/", listFiles);
 
 // POST /api/v1/files/upload
 router.post("/upload", upload.single("file"), uploadFile);
+
+// GET /api/v1/files/:id/download
+router.get("/:id/download", downloadFile);
 
 export default router;

@@ -3,6 +3,7 @@ import type { AuthenticatedRequest } from "../middleware/authMiddleware.js";
 import {
   uploadFile as uploadFileService,
   listFiles as listFilesService,
+  getFileForDownload as getFileForDownloadService,
 } from "../services/fileService.js";
 
 type UploadedFile = {
@@ -108,6 +109,55 @@ export const listFiles = async (
       message: "Files retrieved successfully",
       data: files,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Download a file owned by the authenticated user
+export const downloadFile = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    const { file, object } = await getFileForDownloadService({
+      fileId,
+      ownerId: req.userId,
+    });
+
+    if (!object.Body) {
+      throw new Error("File content is unavailable in storage.");
+    }
+
+    const bytes = await object.Body.transformToByteArray();
+
+    res.status(200);
+    res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
+    res.setHeader("Content-Length", bytes.byteLength);
+    res.setHeader("Content-Disposition", "attachment");
+
+    // Express safely formats the filename for the response header.
+    res.attachment(file.originalName);
+    res.send(Buffer.from(bytes));
   } catch (error) {
     next(error);
   }

@@ -1,6 +1,6 @@
-
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
   S3Client,
@@ -34,6 +34,9 @@ export const s3Client = new S3Client({
   },
 });
 
+/**
+ * Verify that the configured object-storage bucket is accessible.
+ */
 export async function checkStorageConnection(): Promise<void> {
   await s3Client.send(
     new HeadBucketCommand({
@@ -48,6 +51,9 @@ interface UploadObjectInput {
   contentType: string;
 }
 
+/**
+ * Upload a file to object storage.
+ */
 export async function uploadObject({
   key,
   body,
@@ -63,6 +69,30 @@ export async function uploadObject({
   );
 }
 
+/**
+ * Download an object from storage.
+ * The caller must verify database ownership before calling this function.
+ */
+export async function downloadObject(key: string) {
+  const response = await s3Client.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }),
+  );
+
+  if (!response.Body) {
+    throw new Error(
+      "File content is empty or unavailable in storage.",
+    );
+  }
+
+  return response;
+}
+
+/**
+ * Delete a file from object storage.
+ */
 export async function deleteObject(key: string): Promise<void> {
   await s3Client.send(
     new DeleteObjectCommand({
