@@ -43,10 +43,10 @@ model Folder {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  parent       Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
-  children     Folder[] @relation("FolderHierarchy")
-  files        File[]
+  owner   User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parent  Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children Folder[] @relation("FolderHierarchy")
+  files   File[]
 
   @@index([ownerId])
   @@index([parentId])
@@ -54,16 +54,17 @@ model Folder {
 }
 
 model File {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   name         String
   originalName String
-  storageKey   String   @unique
+  storageKey   String    @unique
   mimeType     String
   size         BigInt
   ownerId      String
   folderId     String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 
   owner      User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   folder     Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -73,6 +74,7 @@ model File {
   @@index([folderId])
   @@index([ownerId, folderId])
   @@index([ownerId, name])
+  @@index([ownerId, deletedAt])
 }
 
 model ShareLink {
