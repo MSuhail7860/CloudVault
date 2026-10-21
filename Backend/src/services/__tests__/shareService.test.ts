@@ -217,6 +217,55 @@ describe("shareService", () => {
 
       expect(db.shareLink.findMany).not.toHaveBeenCalled();
     });
+
+    it("lists share links for an active file owned by the user", async () => {
+      const createdAt = new Date("2026-10-20T10:00:00.000Z");
+      const expiresAt = new Date("2026-11-20T10:00:00.000Z");
+
+      const links = [
+        {
+          id: "link-1",
+          fileId: "file-1",
+          expiresAt,
+          revokedAt: null,
+          createdAt,
+        },
+      ];
+
+      vi.mocked(db.file.findFirst).mockResolvedValue({
+        id: "file-1",
+      } as never);
+
+      vi.mocked(db.shareLink.findMany).mockResolvedValue(links as never);
+
+      const result = await listShareLinks({
+        fileId: "file-1",
+        ownerId: "user-1",
+      });
+
+      expect(db.file.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "file-1",
+          ownerId: "user-1",
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+
+      expect(db.shareLink.findMany).toHaveBeenCalledWith({
+        where: { fileId: "file-1" },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          fileId: true,
+          expiresAt: true,
+          revokedAt: true,
+          createdAt: true,
+        },
+      });
+
+      expect(result).toEqual(links);
+    });
   });
 
   describe("revokeShareLink", () => {
@@ -241,6 +290,46 @@ describe("shareService", () => {
       ).rejects.toMatchObject({ statusCode: 400 });
 
       expect(db.shareLink.update).not.toHaveBeenCalled();
+    });
+
+    it("revokes a valid share link owned by the user", async () => {
+      const revokedAt = new Date("2026-10-21T10:00:00.000Z");
+
+      vi.mocked(db.shareLink.findFirst).mockResolvedValue({
+        id: "link-1",
+        revokedAt: null,
+      } as never);
+
+      vi.mocked(db.shareLink.update).mockResolvedValue({
+        id: "link-1",
+        revokedAt,
+      } as never);
+
+      const result = await revokeShareLink({
+        shareLinkId: "link-1",
+        ownerId: "user-1",
+      });
+
+      expect(db.shareLink.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "link-1",
+          createdById: "user-1",
+          file: { ownerId: "user-1" },
+        },
+        select: { id: true, revokedAt: true },
+      });
+
+      expect(db.shareLink.update).toHaveBeenCalledOnce();
+      expect(db.shareLink.update).toHaveBeenCalledWith({
+        where: { id: "link-1" },
+        data: { revokedAt: expect.any(Date) },
+        select: { id: true, revokedAt: true },
+      });
+
+      expect(result).toEqual({
+        id: "link-1",
+        revokedAt,
+      });
     });
   });
 });
