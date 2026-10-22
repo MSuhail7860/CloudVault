@@ -7,6 +7,7 @@ import {
   moveFileToTrash,
   listTrashedFiles,
   restoreFileFromTrash,
+  permanentlyDeleteFile,
 } from "../../controllers/fileController.js";
 import { authenticate } from "../../middleware/authMiddleware.js";
 import { upload } from "../../middleware/uploadMiddleware.js";
@@ -17,11 +18,13 @@ const router = Router();
 router.use(authenticate);
 
 // GET /api/v1/files/trash
-// Register this before parameterized routes.
 router.get("/trash", listTrashedFiles);
 
 // POST /api/v1/files/:id/restore
 router.post("/:id/restore", restoreFileFromTrash);
+
+// DELETE /api/v1/files/:id/permanent
+router.delete("/:id/permanent", permanentlyDeleteFile);
 
 // GET /api/v1/files
 router.get("/", listFiles);
@@ -36,6 +39,7 @@ router.get("/:id/download", downloadFile);
 router.patch("/:id/rename", renameFile);
 
 // DELETE /api/v1/files/:id
+// Moves the file to Trash; does not permanently delete it.
 router.delete("/:id", moveFileToTrash);
 
 export default router;

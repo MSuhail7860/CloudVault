@@ -357,3 +357,41 @@ export const restoreFileFromTrash = async ({
     },
   });
 };
+
+// Permanently delete a file that is already in Trash.
+export const permanentlyDeleteFile = async ({
+  fileId,
+  ownerId,
+}: FileTrashInput) => {
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+      deletedAt: {
+        not: null,
+      },
+    },
+    select: {
+      id: true,
+      storageKey: true,
+    },
+  });
+
+  if (!file) {
+    throw new AppError("Trashed file not found", 404);
+  }
+
+  // Delete the storage object first. If this fails, preserve the DB record.
+  await deleteObject(file.storageKey);
+
+  // ShareLink records are removed by the Prisma schema's cascade relation.
+  // If this DB operation fails, the file remains trashed and can be retried.
+  return prisma.file.delete({
+    where: {
+      id: file.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+};

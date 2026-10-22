@@ -8,6 +8,7 @@ import {
   moveFileToTrash as moveFileToTrashService,
   listTrashedFiles as listTrashedFilesService,
   restoreFileFromTrash as restoreFileFromTrashService,
+  permanentlyDeleteFile as permanentlyDeleteFileService,
 } from "../services/fileService.js";
 
 type UploadedFile = {
@@ -323,6 +324,45 @@ export const restoreFileFromTrash = async (
         ...file,
         size: file.size.toString(),
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Permanently delete a file that is already in Trash.
+export const permanentlyDeleteFile = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    await permanentlyDeleteFileService({
+      fileId,
+      ownerId: req.userId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "File permanently deleted",
     });
   } catch (error) {
     next(error);
