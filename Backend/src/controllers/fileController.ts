@@ -1,3 +1,4 @@
+
 import type { Response, NextFunction } from "express";
 import type { AuthenticatedRequest } from "../middleware/authMiddleware.js";
 import {
@@ -9,6 +10,9 @@ import {
   listTrashedFiles as listTrashedFilesService,
   restoreFileFromTrash as restoreFileFromTrashService,
   permanentlyDeleteFile as permanentlyDeleteFileService,
+  uploadFileVersion as uploadFileVersionService,
+  listFileVersions as listFileVersionsService,
+  restoreFileVersion as restoreFileVersionService,
 } from "../services/fileService.js";
 
 type UploadedFile = {
@@ -363,6 +367,147 @@ export const permanentlyDeleteFile = async (
     res.status(200).json({
       success: true,
       message: "File permanently deleted",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Upload a new version of an existing file.
+export const uploadFileVersion = async (
+  req: FileUploadRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({
+        success: false,
+        message: "A file is required. Use the multipart field 'file'.",
+      });
+      return;
+    }
+
+    const result = await uploadFileVersionService({
+      fileId,
+      ownerId: req.userId,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      buffer: req.file.buffer,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "File version uploaded successfully",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// List the version history of an existing file.
+export const listFileVersions = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    const versions = await listFileVersionsService({
+      fileId,
+      ownerId: req.userId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "File versions retrieved successfully",
+      data: versions,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Restore a previous version of an existing file.
+export const restoreFileVersion = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+    const versionId = req.params.versionId;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    if (typeof versionId !== "string" || !versionId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid version ID is required",
+      });
+      return;
+    }
+
+    const result = await restoreFileVersionService({
+      fileId,
+      versionId,
+      ownerId: req.userId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "File version restored successfully",
+      data: result,
     });
   } catch (error) {
     next(error);

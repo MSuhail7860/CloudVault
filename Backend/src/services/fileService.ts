@@ -38,14 +38,30 @@ interface FileTrashInput {
   ownerId: string;
 }
 
-// Upload a new file.
-export const uploadFile = async ({
-  ownerId,
-  originalName,
-  mimeType,
-  buffer,
-  folderId,
-}: UploadFileInput) => {
+interface UploadFileVersionInput {
+  fileId: string;
+  ownerId: string;
+  originalName: string;
+  mimeType: string;
+  buffer: Buffer;
+}
+
+interface ListFileVersionsInput {
+  fileId: string;
+  ownerId: string;
+}
+
+interface RestoreFileVersionInput {
+  fileId: string;
+  versionId: string;
+  ownerId: string;
+}
+
+const validateUploadedContent = (
+  originalName: string,
+  mimeType: string,
+  buffer: Buffer,
+) => {
   const normalizedName = originalName.trim();
 
   if (!normalizedName) {
@@ -68,15 +84,38 @@ export const uploadFile = async ({
     throw new AppError("A valid content type is required", 400);
   }
 
+  return normalizedName;
+};
+
+const downloadObjectAsBuffer = async (key: string): Promise<Buffer> => {
+  const response = await downloadObject(key);
+
+  if (!response.Body) {
+    throw new AppError("File content is unavailable in storage", 500);
+  }
+
+  const bytes = await response.Body.transformToByteArray();
+  return Buffer.from(bytes);
+};
+
+// Upload a new file.
+export const uploadFile = async ({
+  ownerId,
+  originalName,
+  mimeType,
+  buffer,
+  folderId,
+}: UploadFileInput) => {
+  const normalizedName = validateUploadedContent(
+    originalName,
+    mimeType,
+    buffer,
+  );
+
   if (folderId) {
     const folder = await prisma.folder.findFirst({
-      where: {
-        id: folderId,
-        ownerId,
-      },
-      select: {
-        id: true,
-      },
+      where: { id: folderId, ownerId },
+      select: { id: true },
     });
 
     if (!folder) {
@@ -84,7 +123,6 @@ export const uploadFile = async ({
     }
   }
 
-  // Never use a user-supplied filename as the storage key.
   const storageKey = `${ownerId}/${randomUUID()}`;
 
   await uploadObject({
@@ -94,7 +132,7 @@ export const uploadFile = async ({
   });
 
   try {
-    return await prisma.file.create({
+    const file = await prisma.file.create({
       data: {
         name: normalizedName,
         originalName: normalizedName,
@@ -114,8 +152,12 @@ export const uploadFile = async ({
         createdAt: true,
       },
     });
+
+    return {
+      ...file,
+      size: file.size.toString(),
+    };
   } catch (error) {
-    // Best-effort storage cleanup if database persistence fails.
     try {
       await deleteObject(storageKey);
     } catch {
@@ -137,9 +179,7 @@ export const listFiles = async ({
       folderId: folderId ?? null,
       deletedAt: null,
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: { createdAt: "desc" },
     select: {
       id: true,
       name: true,
@@ -217,9 +257,7 @@ export const renameFile = async ({
       ownerId,
       deletedAt: null,
     },
-    select: {
-      id: true,
-    },
+    select: { id: true },
   });
 
   if (!file) {
@@ -227,9 +265,7 @@ export const renameFile = async ({
   }
 
   return prisma.file.update({
-    where: {
-      id: file.id,
-    },
+    where: { id: file.id },
     data: {
       name: normalizedName,
       originalName: normalizedName,
@@ -244,10 +280,13 @@ export const renameFile = async ({
       createdAt: true,
       updatedAt: true,
     },
-  });
+  }).then((updatedFile) => ({
+    ...updatedFile,
+    size: updatedFile.size.toString(),
+  }));
 };
 
-// Move an active file to Trash without deleting its storage object.
+// Move an active file to Trash without deleting its storage objects.
 export const moveFileToTrash = async ({
   fileId,
   ownerId,
@@ -258,9 +297,7 @@ export const moveFileToTrash = async ({
       ownerId,
       deletedAt: null,
     },
-    select: {
-      id: true,
-    },
+    select: { id: true },
   });
 
   if (!file) {
@@ -268,12 +305,8 @@ export const moveFileToTrash = async ({
   }
 
   return prisma.file.update({
-    where: {
-      id: file.id,
-    },
-    data: {
-      deletedAt: new Date(),
-    },
+    where: { id: file.id },
+    data: { deletedAt: new Date() },
     select: {
       id: true,
       name: true,
@@ -291,13 +324,9 @@ export const listTrashedFiles = async ({
   const files = await prisma.file.findMany({
     where: {
       ownerId,
-      deletedAt: {
-        not: null,
-      },
+      deletedAt: { not: null },
     },
-    orderBy: {
-      deletedAt: "desc",
-    },
+    orderBy: { deletedAt: "desc" },
     select: {
       id: true,
       name: true,
@@ -325,26 +354,18 @@ export const restoreFileFromTrash = async ({
     where: {
       id: fileId,
       ownerId,
-      deletedAt: {
-        not: null,
-      },
+      deletedAt: { not: null },
     },
-    select: {
-      id: true,
-    },
+    select: { id: true },
   });
 
   if (!file) {
     throw new AppError("Trashed file not found", 404);
   }
 
-  return prisma.file.update({
-    where: {
-      id: file.id,
-    },
-    data: {
-      deletedAt: null,
-    },
+  const restoredFile = await prisma.file.update({
+    where: { id: file.id },
+    data: { deletedAt: null },
     select: {
       id: true,
       name: true,
@@ -356,9 +377,321 @@ export const restoreFileFromTrash = async ({
       updatedAt: true,
     },
   });
+
+  return {
+    ...restoredFile,
+    size: restoredFile.size.toString(),
+  };
 };
 
-// Permanently delete a file that is already in Trash.
+// Upload a new revision while preserving the existing file ID.
+export const uploadFileVersion = async ({
+  fileId,
+  ownerId,
+  originalName,
+  mimeType,
+  buffer,
+}: UploadFileVersionInput) => {
+  const normalizedName = validateUploadedContent(
+    originalName,
+    mimeType,
+    buffer,
+  );
+
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      storageKey: true,
+      mimeType: true,
+      size: true,
+    },
+  });
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  const newStorageKey = `${ownerId}/${randomUUID()}`;
+
+  // Upload new content before changing the database.
+  await uploadObject({
+    key: newStorageKey,
+    body: buffer,
+    contentType: mimeType,
+  });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Recheck ownership and active status inside the transaction.
+      const currentFile = await tx.file.findFirst({
+        where: {
+          id: fileId,
+          ownerId,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          storageKey: true,
+          mimeType: true,
+          size: true,
+        },
+      });
+
+      if (!currentFile) {
+        throw new AppError("File not found", 404);
+      }
+
+      const latestVersion = await tx.fileVersion.findFirst({
+        where: { fileId },
+        orderBy: { version: "desc" },
+        select: { version: true },
+      });
+
+      const nextVersion = (latestVersion?.version ?? 0) + 1;
+
+      // Preserve the old storage key as the historical version.
+      const version = await tx.fileVersion.create({
+        data: {
+          fileId,
+          version: nextVersion,
+          storageKey: currentFile.storageKey,
+          mimeType: currentFile.mimeType,
+          size: currentFile.size,
+        },
+        select: {
+          id: true,
+          version: true,
+          mimeType: true,
+          size: true,
+          createdAt: true,
+        },
+      });
+
+      const updatedFile = await tx.file.update({
+        where: { id: fileId },
+        data: {
+          name: normalizedName,
+          originalName: normalizedName,
+          storageKey: newStorageKey,
+          mimeType,
+          size: BigInt(buffer.length),
+        },
+        select: {
+          id: true,
+          name: true,
+          originalName: true,
+          mimeType: true,
+          size: true,
+          updatedAt: true,
+        },
+      });
+
+      return { version, file: updatedFile };
+    });
+
+    return {
+      version: {
+        ...result.version,
+        size: result.version.size.toString(),
+      },
+      file: {
+        ...result.file,
+        size: result.file.size.toString(),
+      },
+    };
+  } catch (error) {
+    try {
+      await deleteObject(newStorageKey);
+    } catch {
+      // Preserve the original database error.
+    }
+
+    throw error;
+  }
+};
+
+// List saved historical versions for an active file.
+export const listFileVersions = async ({
+  fileId,
+  ownerId,
+}: ListFileVersionsInput) => {
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  const versions = await prisma.fileVersion.findMany({
+    where: { fileId: file.id },
+    orderBy: { version: "desc" },
+    select: {
+      id: true,
+      version: true,
+      mimeType: true,
+      size: true,
+      createdAt: true,
+    },
+  });
+
+  return versions.map((version) => ({
+    ...version,
+    size: version.size.toString(),
+  }));
+};
+
+// Restore a saved version without discarding the current content.
+export const restoreFileVersion = async ({
+  fileId,
+  versionId,
+  ownerId,
+}: RestoreFileVersionInput) => {
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      storageKey: true,
+      mimeType: true,
+      size: true,
+    },
+  });
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  const versionToRestore = await prisma.fileVersion.findFirst({
+    where: {
+      id: versionId,
+      fileId: file.id,
+    },
+    select: {
+      id: true,
+      storageKey: true,
+      mimeType: true,
+      size: true,
+    },
+  });
+
+  if (!versionToRestore) {
+    throw new AppError("File version not found", 404);
+  }
+
+  // Copy the selected historical content into a fresh current storage key.
+  const previousContent = await downloadObjectAsBuffer(
+    versionToRestore.storageKey,
+  );
+  const restoredStorageKey = `${ownerId}/${randomUUID()}`;
+
+  await uploadObject({
+    key: restoredStorageKey,
+    body: previousContent,
+    contentType: versionToRestore.mimeType,
+  });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const currentFile = await tx.file.findFirst({
+        where: {
+          id: fileId,
+          ownerId,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          storageKey: true,
+          mimeType: true,
+          size: true,
+        },
+      });
+
+      if (!currentFile) {
+        throw new AppError("File not found", 404);
+      }
+
+      // Keep the content being replaced as a new historical version.
+      const latestVersion = await tx.fileVersion.findFirst({
+        where: { fileId },
+        orderBy: { version: "desc" },
+        select: { version: true },
+      });
+
+      const nextVersion = (latestVersion?.version ?? 0) + 1;
+
+      const savedCurrentVersion = await tx.fileVersion.create({
+        data: {
+          fileId,
+          version: nextVersion,
+          storageKey: currentFile.storageKey,
+          mimeType: currentFile.mimeType,
+          size: currentFile.size,
+        },
+        select: {
+          id: true,
+          version: true,
+          mimeType: true,
+          size: true,
+          createdAt: true,
+        },
+      });
+
+      const updatedFile = await tx.file.update({
+        where: { id: fileId },
+        data: {
+          storageKey: restoredStorageKey,
+          mimeType: versionToRestore.mimeType,
+          size: versionToRestore.size,
+        },
+        select: {
+          id: true,
+          name: true,
+          originalName: true,
+          mimeType: true,
+          size: true,
+          updatedAt: true,
+        },
+      });
+
+      return { savedCurrentVersion, file: updatedFile };
+    });
+
+    return {
+      savedCurrentVersion: {
+        ...result.savedCurrentVersion,
+        size: result.savedCurrentVersion.size.toString(),
+      },
+      file: {
+        ...result.file,
+        size: result.file.size.toString(),
+      },
+    };
+  } catch (error) {
+    try {
+      await deleteObject(restoredStorageKey);
+    } catch {
+      // Preserve the original database error.
+    }
+
+    throw error;
+  }
+};
+
+// Permanently delete a trashed file and all its stored historical versions.
 export const permanentlyDeleteFile = async ({
   fileId,
   ownerId,
@@ -367,13 +700,14 @@ export const permanentlyDeleteFile = async ({
     where: {
       id: fileId,
       ownerId,
-      deletedAt: {
-        not: null,
-      },
+      deletedAt: { not: null },
     },
     select: {
       id: true,
       storageKey: true,
+      versions: {
+        select: { storageKey: true },
+      },
     },
   });
 
@@ -381,17 +715,21 @@ export const permanentlyDeleteFile = async ({
     throw new AppError("Trashed file not found", 404);
   }
 
-  // Delete the storage object first. If this fails, preserve the DB record.
-  await deleteObject(file.storageKey);
+  // Remove all associated objects before deleting the database record.
+  // If storage deletion fails, keep the trashed file record for retry.
+  const storageKeys = [
+    ...new Set([
+      file.storageKey,
+      ...file.versions.map((version) => version.storageKey),
+    ]),
+  ];
 
-  // ShareLink records are removed by the Prisma schema's cascade relation.
-  // If this DB operation fails, the file remains trashed and can be retried.
+  for (const key of storageKeys) {
+    await deleteObject(key);
+  }
+
   return prisma.file.delete({
-    where: {
-      id: file.id,
-    },
-    select: {
-      id: true,
-    },
+    where: { id: file.id },
+    select: { id: true },
   });
 };

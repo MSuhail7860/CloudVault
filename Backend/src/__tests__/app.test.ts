@@ -108,14 +108,13 @@ describe("Express application", () => {
     });
   });
 
-  it("returns 503 or 500 through the error handler when health DB query fails", async () => {
+  it("returns 500 through the error handler when the health DB query fails", async () => {
     vi.mocked(db.$queryRaw).mockRejectedValue(
       new Error("Database unavailable"),
     );
 
     const response = await request(app).get("/api/v1/health");
 
-    // The current error handler maps unexpected errors to HTTP 500.
     expect(response.status).toBe(500);
     expect(response.body).toEqual({
       success: false,
@@ -142,6 +141,30 @@ describe("Express application", () => {
     expect(response.status).toBe(401);
   });
 
+  it("requires authentication to upload a file version", async () => {
+    const response = await request(app).post(
+      "/api/v1/files/test-file-id/versions",
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("requires authentication to list file versions", async () => {
+    const response = await request(app).get(
+      "/api/v1/files/test-file-id/versions",
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("requires authentication to restore a file version", async () => {
+    const response = await request(app).post(
+      "/api/v1/files/test-file-id/versions/test-version-id/restore",
+    );
+
+    expect(response.status).toBe(401);
+  });
+
   it("requires authentication for folder listing", async () => {
     const response = await request(app).get("/api/v1/folders");
 
@@ -161,5 +184,35 @@ describe("Express application", () => {
 
     expect([200, 204]).toContain(response.status);
     expect(checkStorageConnection).toHaveBeenCalledOnce();
+  });
+
+  it("includes security headers from Helmet", async () => {
+    const response = await request(app).get("/");
+
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["x-frame-options"]).toBeDefined();
+  });
+
+  it("allows the configured frontend origin", async () => {
+    const configuredOrigin =
+      process.env.FRONTEND_URL?.split(",")[0]?.trim() ??
+      "http://localhost:3000";
+
+    const response = await request(app)
+      .get("/api/v1")
+      .set("Origin", configuredOrigin);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe(
+      configuredOrigin,
+    );
+  });
+
+  it("does not grant CORS access to an unconfigured origin", async () => {
+    const response = await request(app)
+      .get("/api/v1")
+      .set("Origin", "https://untrusted-example.invalid");
+
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });

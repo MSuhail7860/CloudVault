@@ -8,7 +8,11 @@ import {
   listTrashedFiles,
   restoreFileFromTrash,
   permanentlyDeleteFile,
+  uploadFileVersion,
+  listFileVersions,
+  restoreFileVersion,
 } from "../../controllers/fileController.js";
+import { searchFiles } from "../../controllers/fileSearchController.js";
 import { authenticate } from "../../middleware/authMiddleware.js";
 import { upload } from "../../middleware/uploadMiddleware.js";
 
@@ -20,11 +24,26 @@ router.use(authenticate);
 // GET /api/v1/files/trash
 router.get("/trash", listTrashedFiles);
 
+// GET /api/v1/files/search?q=report&page=1&limit=10
+router.get("/search", searchFiles);
+
 // POST /api/v1/files/:id/restore
 router.post("/:id/restore", restoreFileFromTrash);
 
 // DELETE /api/v1/files/:id/permanent
 router.delete("/:id/permanent", permanentlyDeleteFile);
+
+// GET /api/v1/files/:id/versions
+router.get("/:id/versions", listFileVersions);
+
+// POST /api/v1/files/:id/versions
+router.post("/:id/versions", upload.single("file"), uploadFileVersion);
+
+// POST /api/v1/files/:id/versions/:versionId/restore
+router.post(
+  "/:id/versions/:versionId/restore",
+  restoreFileVersion,
+);
 
 // GET /api/v1/files
 router.get("/", listFiles);

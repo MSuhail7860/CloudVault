@@ -6,6 +6,7 @@ import { storageHealth } from "../../controllers/storageController.js";
 import filesRouter from "./files.js";
 import sharesRouter from "./shares.js";
 import sharedRouter from "./shared.js";
+import dashboardRouter from "./dashboard.js";
 
 const router = Router();
 
@@ -21,6 +22,7 @@ router.use("/folders", foldersRouter);
 router.use("/files", filesRouter);
 router.use("/shares", sharesRouter);
 router.use("/shared", sharedRouter);
+router.use("/dashboard", dashboardRouter);
 
 // Temporary object storage connection test
 router.get("/storage/health", storageHealth);

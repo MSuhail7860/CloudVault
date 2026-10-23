@@ -12,6 +12,12 @@ vi.mock("../../config/database.js", () => ({
       update: vi.fn(),
       delete: vi.fn(),
     },
+    fileVersion: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+    },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -36,6 +42,9 @@ import {
   listTrashedFiles,
   restoreFileFromTrash,
   permanentlyDeleteFile,
+  uploadFileVersion,
+  listFileVersions,
+  restoreFileVersion,
 } from "../fileService.js";
 
 const db = vi.mocked(prisma);
@@ -66,7 +75,6 @@ const appError = async (
   statusCode: number,
 ) => {
   const error = await promise.catch((caught: unknown) => caught);
-
   expect(error).toMatchObject({ message, statusCode });
 };
 
@@ -202,9 +210,7 @@ describe("uploadFile", () => {
 
 describe("listFiles", () => {
   it("lists active files and converts BigInt sizes to strings", async () => {
-    vi.mocked(db.file.findMany).mockResolvedValue([
-      activeFile,
-    ] as never);
+    vi.mocked(db.file.findMany).mockResolvedValue([activeFile] as never);
 
     const result = await listFiles({ ownerId });
 
@@ -237,9 +243,7 @@ describe("listFiles", () => {
 
 describe("getFileForDownload", () => {
   it("downloads an active file belonging to the user", async () => {
-    vi.mocked(db.file.findFirst).mockResolvedValue(
-      activeFile as never,
-    );
+    vi.mocked(db.file.findFirst).mockResolvedValue(activeFile as never);
 
     const object = { body: "mock file body" };
     storageDownload.mockResolvedValue(object as never);
@@ -271,9 +275,7 @@ describe("getFileForDownload", () => {
 
 describe("renameFile", () => {
   it("renames an active file", async () => {
-    vi.mocked(db.file.findFirst).mockResolvedValue({
-      id: fileId,
-    } as never);
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
 
     vi.mocked(db.file.update).mockResolvedValue({
       ...activeFile,
@@ -319,9 +321,7 @@ describe("renameFile", () => {
 
 describe("moveFileToTrash", () => {
   it("moves an active file to Trash without deleting storage", async () => {
-    vi.mocked(db.file.findFirst).mockResolvedValue({
-      id: fileId,
-    } as never);
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
 
     vi.mocked(db.file.update).mockResolvedValue({
       id: fileId,
@@ -378,13 +378,9 @@ describe("listTrashedFiles", () => {
 
 describe("restoreFileFromTrash", () => {
   it("restores a trashed file", async () => {
-    vi.mocked(db.file.findFirst).mockResolvedValue({
-      id: fileId,
-    } as never);
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
 
-    vi.mocked(db.file.update).mockResolvedValue({
-      ...activeFile,
-    } as never);
+    vi.mocked(db.file.update).mockResolvedValue({ ...activeFile } as never);
 
     await restoreFileFromTrash({ fileId, ownerId });
 
@@ -424,12 +420,11 @@ describe("permanentlyDeleteFile", () => {
     vi.mocked(db.file.findFirst).mockResolvedValue({
       id: fileId,
       storageKey,
+      versions: [],
     } as never);
 
     storageDelete.mockResolvedValue(undefined);
-    vi.mocked(db.file.delete).mockResolvedValue({
-      id: fileId,
-    } as never);
+    vi.mocked(db.file.delete).mockResolvedValue({ id: fileId } as never);
 
     const result = await permanentlyDeleteFile({ fileId, ownerId });
 
@@ -468,6 +463,7 @@ describe("permanentlyDeleteFile", () => {
     vi.mocked(db.file.findFirst).mockResolvedValue({
       id: fileId,
       storageKey,
+      versions: [],
     } as never);
 
     storageDelete.mockRejectedValue(new Error("Storage unavailable"));
@@ -477,5 +473,396 @@ describe("permanentlyDeleteFile", () => {
     ).rejects.toThrow("Storage unavailable");
 
     expect(db.file.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("uploadFileVersion", () => {
+  it("saves the previous content and updates the file to the new version", async () => {
+    const buffer = Buffer.from("new PDF content");
+    const previousSize = BigInt(1024);
+    const newSize = BigInt(buffer.length);
+    const now = new Date();
+
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+      storageKey,
+      mimeType: "application/pdf",
+      size: previousSize,
+    } as never);
+
+    const tx = {
+      file: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: fileId,
+          storageKey,
+          mimeType: "application/pdf",
+          size: previousSize,
+        }),
+        update: vi.fn().mockResolvedValue({
+          id: fileId,
+          name: "report.pdf",
+          originalName: "report.pdf",
+          mimeType: "application/pdf",
+          size: newSize,
+          updatedAt: now,
+        }),
+      },
+      fileVersion: {
+        findFirst: vi.fn().mockResolvedValue({ version: 1 }),
+        create: vi.fn().mockResolvedValue({
+          id: "version-2",
+          version: 2,
+          mimeType: "application/pdf",
+          size: previousSize,
+          createdAt: now,
+        }),
+      },
+    };
+
+    vi.mocked(db.$transaction).mockImplementation(
+      (async (callback: (transaction: unknown) => Promise<unknown>) =>
+        callback(tx)) as never,
+    );
+
+    storageUpload.mockResolvedValue(undefined);
+
+    const result = await uploadFileVersion({
+      fileId,
+      ownerId,
+      originalName: "report.pdf",
+      mimeType: "application/pdf",
+      buffer,
+    });
+
+    expect(storageUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: buffer,
+        contentType: "application/pdf",
+      }),
+    );
+
+    expect(tx.fileVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          fileId,
+          version: 2,
+          storageKey,
+          mimeType: "application/pdf",
+          size: previousSize,
+        }),
+      }),
+    );
+
+    expect(tx.file.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: fileId },
+        data: expect.objectContaining({
+          name: "report.pdf",
+          originalName: "report.pdf",
+          mimeType: "application/pdf",
+          size: newSize,
+        }),
+      }),
+    );
+
+    expect(result.version.version).toBe(2);
+    expect(result.version.size).toBe(previousSize.toString());
+    expect(result.file.size).toBe(newSize.toString());
+  });
+
+  it("rejects a missing or inaccessible file", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce(null);
+
+    await appError(
+      uploadFileVersion({
+        fileId,
+        ownerId,
+        originalName: "report.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from("new content"),
+      }),
+      "File not found",
+      404,
+    );
+
+    expect(storageUpload).not.toHaveBeenCalled();
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("deletes the newly uploaded object when the database transaction fails", async () => {
+    const databaseError = new Error("Database transaction failed");
+
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+      storageKey,
+      mimeType: "application/pdf",
+      size: BigInt(1024),
+    } as never);
+
+    storageUpload.mockResolvedValue(undefined);
+    vi.mocked(db.$transaction).mockRejectedValueOnce(databaseError);
+    storageDelete.mockResolvedValue(undefined);
+
+    await expect(
+      uploadFileVersion({
+        fileId,
+        ownerId,
+        originalName: "report.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from("new content"),
+      }),
+    ).rejects.toBe(databaseError);
+
+    expect(storageUpload).toHaveBeenCalledOnce();
+    expect(storageDelete).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`^${ownerId}/`)),
+    );
+  });
+});
+
+describe("listFileVersions", () => {
+  it("lists versions in descending order and converts sizes to strings", async () => {
+    const now = new Date();
+
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+    } as never);
+
+    vi.mocked(db.fileVersion.findMany).mockResolvedValueOnce([
+      {
+        id: "version-2",
+        version: 2,
+        mimeType: "application/pdf",
+        size: BigInt(2048),
+        createdAt: now,
+      },
+      {
+        id: "version-1",
+        version: 1,
+        mimeType: "application/pdf",
+        size: BigInt(1024),
+        createdAt: now,
+      },
+    ] as never);
+
+    const result = await listFileVersions({ fileId, ownerId });
+
+    expect(db.fileVersion.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { fileId },
+        orderBy: { version: "desc" },
+      }),
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.version).toBe(2);
+    expect(result[0]!.size).toBe("2048");
+    expect(result[1]!.version).toBe(1);
+    expect(result[1]!.size).toBe("1024");
+  });
+
+  it("rejects a missing or trashed file", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce(null);
+
+    await appError(
+      listFileVersions({ fileId, ownerId }),
+      "File not found",
+      404,
+    );
+
+    expect(db.fileVersion.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("restoreFileVersion", () => {
+  it("restores historical content and preserves the replaced content", async () => {
+    const historicalContent = Buffer.from("previous PDF content");
+    const historicalSize = BigInt(historicalContent.length);
+    const currentSize = BigInt(1024);
+    const now = new Date();
+
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+      storageKey,
+      mimeType: "application/pdf",
+      size: currentSize,
+    } as never);
+
+    vi.mocked(db.fileVersion.findFirst).mockResolvedValueOnce({
+      id: "version-1",
+      storageKey: `${ownerId}/old-object`,
+      mimeType: "application/pdf",
+      size: historicalSize,
+    } as never);
+
+    storageDownload.mockResolvedValueOnce({
+      Body: {
+        transformToByteArray: async () =>
+          new Uint8Array(historicalContent),
+      },
+    } as never);
+
+    const tx = {
+      file: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: fileId,
+          storageKey,
+          mimeType: "application/pdf",
+          size: currentSize,
+        }),
+        update: vi.fn().mockResolvedValue({
+          id: fileId,
+          name: "report.pdf",
+          originalName: "report.pdf",
+          mimeType: "application/pdf",
+          size: historicalSize,
+          updatedAt: now,
+        }),
+      },
+      fileVersion: {
+        findFirst: vi.fn().mockResolvedValue({ version: 1 }),
+        create: vi.fn().mockResolvedValue({
+          id: "version-2",
+          version: 2,
+          mimeType: "application/pdf",
+          size: currentSize,
+          createdAt: now,
+        }),
+      },
+    };
+
+    vi.mocked(db.$transaction).mockImplementation(
+      (async (callback: (transaction: unknown) => Promise<unknown>) =>
+        callback(tx)) as never,
+    );
+
+    storageUpload.mockResolvedValue(undefined);
+
+    const result = await restoreFileVersion({
+      fileId,
+      versionId: "version-1",
+      ownerId,
+    });
+
+    expect(storageDownload).toHaveBeenCalledWith(
+      `${ownerId}/old-object`,
+    );
+
+    expect(storageUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: historicalContent,
+        contentType: "application/pdf",
+      }),
+    );
+
+    expect(tx.fileVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          fileId,
+          version: 2,
+          storageKey,
+          mimeType: "application/pdf",
+          size: currentSize,
+        }),
+      }),
+    );
+
+    expect(tx.file.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: fileId },
+        data: expect.objectContaining({
+          storageKey: expect.stringMatching(new RegExp(`^${ownerId}/`)),
+          mimeType: "application/pdf",
+          size: historicalSize,
+        }),
+      }),
+    );
+
+    expect(result.savedCurrentVersion.version).toBe(2);
+    expect(result.savedCurrentVersion.size).toBe(currentSize.toString());
+    expect(result.file.size).toBe(historicalSize.toString());
+  });
+
+  it("rejects a missing or trashed file", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce(null);
+
+    await appError(
+      restoreFileVersion({
+        fileId,
+        versionId: "version-1",
+        ownerId,
+      }),
+      "File not found",
+      404,
+    );
+
+    expect(db.fileVersion.findFirst).not.toHaveBeenCalled();
+    expect(storageDownload).not.toHaveBeenCalled();
+  });
+
+  it("rejects a version that does not belong to the file", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+      storageKey,
+      mimeType: "application/pdf",
+      size: BigInt(1024),
+    } as never);
+
+    vi.mocked(db.fileVersion.findFirst).mockResolvedValueOnce(null);
+
+    await appError(
+      restoreFileVersion({
+        fileId,
+        versionId: "missing-version",
+        ownerId,
+      }),
+      "File version not found",
+      404,
+    );
+
+    expect(storageDownload).not.toHaveBeenCalled();
+    expect(storageUpload).not.toHaveBeenCalled();
+  });
+
+  it("deletes the restored object when the database transaction fails", async () => {
+    const databaseError = new Error("Database transaction failed");
+
+    vi.mocked(db.file.findFirst).mockResolvedValueOnce({
+      id: fileId,
+      storageKey,
+      mimeType: "application/pdf",
+      size: BigInt(1024),
+    } as never);
+
+    vi.mocked(db.fileVersion.findFirst).mockResolvedValueOnce({
+      id: "version-1",
+      storageKey: `${ownerId}/old-object`,
+      mimeType: "application/pdf",
+      size: BigInt(20),
+    } as never);
+
+    storageDownload.mockResolvedValueOnce({
+      Body: {
+        transformToByteArray: async () =>
+          new Uint8Array(Buffer.from("historical content")),
+      },
+    } as never);
+
+    storageUpload.mockResolvedValue(undefined);
+    vi.mocked(db.$transaction).mockRejectedValueOnce(databaseError);
+    storageDelete.mockResolvedValue(undefined);
+
+    await expect(
+      restoreFileVersion({
+        fileId,
+        versionId: "version-1",
+        ownerId,
+      }),
+    ).rejects.toBe(databaseError);
+
+    expect(storageUpload).toHaveBeenCalledOnce();
+    expect(storageDelete).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`^${ownerId}/`)),
+    );
   });
 });
