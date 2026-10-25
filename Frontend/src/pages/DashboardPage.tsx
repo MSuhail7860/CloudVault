@@ -10,15 +10,28 @@ import {
   createFolder as createCloudFolder,
   renameCloudFile,
   moveFileToTrash,
+  listTrashedFiles,
+  restoreTrashedFile,
+  permanentlyDeleteTrashedFile,
   type CloudFile,
   type CloudFolder,
+  type TrashedCloudFile,
+  createShareLink,
+  listShareLinks,
+  revokeShareLink,
+  type ShareLink,
 } from "../lib/files";
 import type { LucideIcon } from "lucide-react";
 import {
+  AlertCircle,
+  ArrowRight,
   Bell,
+  CheckCircle2,
+  Copy,
   ChevronDown,
   Clock3,
   Cloud,
+  Download,
   File,
   FileImage,
   FileText,
@@ -30,30 +43,37 @@ import {
   Link2,
   Menu,
   MoreVertical,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   Share2,
+  Trash,
   Trash2,
   Upload,
   Users,
   X,
-  Plus,
-  ArrowRight,
-  CheckCircle2,
-  Download,
-  Pencil,
-  Trash,
+  Eye,
 } from "lucide-react";
 
 type FileItem = {
   id: string;
   name: string;
   type: string;
+  mimeType: string;
   modified: string;
   size: string;
   icon: LucideIcon;
   color: string;
   bg: string;
+};
+
+type PreviewItem = {
+  name: string;
+  mimeType: string;
+  url: string;
 };
 
 const navigation: { label: string; icon: LucideIcon }[] = [
@@ -66,6 +86,61 @@ const navigation: { label: string; icon: LucideIcon }[] = [
   { label: "Settings", icon: Settings },
 ];
 
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "—";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatSize(value: string | number | null | undefined): string {
+  const bytes = Number(value);
+
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function getFilePresentation(mimeType: string) {
+  if (mimeType.startsWith("image/")) {
+    return {
+      type: "Image",
+      icon: FileImage,
+      color: "text-teal-600",
+      bg: "bg-teal-50",
+    };
+  }
+
+  if (mimeType === "application/pdf") {
+    return {
+      type: "PDF Document",
+      icon: FileText,
+      color: "text-red-500",
+      bg: "bg-red-50",
+    };
+  }
+
+  return {
+    type: "File",
+    icon: File,
+    color: "text-blue-600",
+    bg: "bg-blue-50",
+  };
+}
+
 export default function DashboardPage() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [search, setSearch] = useState("");
@@ -77,8 +152,24 @@ export default function DashboardPage() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fileError, setFileError] = useState("");
+
+  const [trashedFiles, setTrashedFiles] = useState<TrashedCloudFile[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashError, setTrashError] = useState("");
+
+  const [preview, setPreview] = useState<PreviewItem | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+
   const uploadRef = useRef<HTMLInputElement>(null);
   const noticeTimer = useRef<number | undefined>(undefined);
+  const [shareLinks, setShareLinks] = useState<(ShareLink & { fileName: string })[]>([]);
+  const [shareLinksLoading, setShareLinksLoading] = useState(false);
+  const [shareLinksError, setShareLinksError] = useState("");
+  const [shareDialogFile, setShareDialogFile] = useState<FileItem | null>(null);
+  const [shareExpiry, setShareExpiry] = useState("never");
+  const [createdShareUrl, setCreatedShareUrl] = useState("");
+  const [shareSubmitting, setShareSubmitting] = useState(false);
 
   function notify(message: string) {
     setNotice(message);
@@ -90,62 +181,32 @@ export default function DashboardPage() {
     noticeTimer.current = window.setTimeout(() => {
       setNotice("");
       noticeTimer.current = undefined;
-    }, 3000);
+    }, 3500);
   }
 
   async function refreshCloudFiles() {
+    setFileError("");
+
     try {
       const [cloudFiles, cloudFolders] = await Promise.all([
         listFiles(),
         listFolders(),
       ]);
 
-      const formatDate = (value: string) =>
-        new Date(value).toLocaleString([], {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-        });
-
-      const formatSize = (value: string) => {
-        const bytes = Number(value);
-
-        if (!Number.isFinite(bytes) || bytes < 0) return "—";
-        if (bytes < 1024) return `${bytes} B`;
-        if (bytes < 1024 * 1024) {
-          return `${(bytes / 1024).toFixed(1)} KB`;
-        }
-        if (bytes < 1024 * 1024 * 1024) {
-          return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-        }
-
-        return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-      };
-
       const mapFile = (file: CloudFile): FileItem => {
-        const name = file.name || file.originalName;
-        const isImage = file.mimeType.startsWith("image/");
-        const isPdf = file.mimeType === "application/pdf";
+        const mimeType = file.mimeType || "application/octet-stream";
+        const presentation = getFilePresentation(mimeType);
 
         return {
           id: file.id,
-          name,
-          type: isImage ? "Image" : isPdf ? "PDF Document" : "File",
+          name: file.name || file.originalName,
+          type: presentation.type,
+          mimeType,
           modified: formatDate(file.updatedAt || file.createdAt),
           size: formatSize(file.size),
-          icon: isImage ? FileImage : isPdf ? FileText : File,
-          color: isImage
-            ? "text-teal-600"
-            : isPdf
-              ? "text-red-500"
-              : "text-blue-600",
-          bg: isImage
-            ? "bg-teal-50"
-            : isPdf
-              ? "bg-red-50"
-              : "bg-blue-50",
+          icon: presentation.icon,
+          color: presentation.color,
+          bg: presentation.bg,
         };
       };
 
@@ -153,6 +214,7 @@ export default function DashboardPage() {
         id: folder.id,
         name: folder.name,
         type: "Folder",
+        mimeType: "",
         modified: formatDate(folder.updatedAt || folder.createdAt),
         size: "—",
         icon: Folder,
@@ -166,11 +228,26 @@ export default function DashboardPage() {
       ]);
     } catch (error) {
       console.error("Failed to load CloudVault files:", error);
-      notify(
+      setFileError(
         "Couldn't load files. Check that the backend is running and you're signed in.",
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshTrash() {
+    setTrashLoading(true);
+    setTrashError("");
+
+    try {
+      const result = await listTrashedFiles();
+      setTrashedFiles(result);
+    } catch (error) {
+      console.error("Failed to load trash:", error);
+      setTrashError("Unable to load your trash. Please try again.");
+    } finally {
+      setTrashLoading(false);
     }
   }
 
@@ -196,14 +273,50 @@ export default function DashboardPage() {
     }
   }
 
+  async function handlePreview(file: FileItem) {
+    setOpenMenuId(null);
+
+    if (
+      !file.mimeType.startsWith("image/") &&
+      file.mimeType !== "application/pdf"
+    ) {
+      notify("Preview is available for images and PDF files only.");
+      return;
+    }
+
+    setPreviewLoadingId(file.id);
+
+    try {
+      const blob = await downloadCloudFile(file.id);
+      const url = URL.createObjectURL(blob);
+
+      setPreview((current) => {
+        if (current) URL.revokeObjectURL(current.url);
+        return {
+          name: file.name,
+          mimeType: file.mimeType,
+          url,
+        };
+      });
+    } catch (error) {
+      console.error(`Failed to preview ${file.name}:`, error);
+      notify(`Couldn't preview ${file.name}. Please try again.`);
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  }
+
+  function closePreview() {
+    setPreview((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+  }
+
   async function handleRename(fileId: string, currentName: string) {
     setOpenMenuId(null);
 
-    const enteredName = window.prompt(
-      "Enter the new file name:",
-      currentName,
-    );
-
+    const enteredName = window.prompt("Enter the new file name:", currentName);
     if (enteredName === null) return;
 
     const newName = enteredName.trim();
@@ -224,23 +337,152 @@ export default function DashboardPage() {
       notify("Couldn't rename the file. Please try again.");
     }
   }
+  
+  async function refreshShareLinks() {
+    setShareLinksLoading(true);
+    setShareLinksError("");
+
+    try {
+      const cloudFiles = await listFiles();
+      const results = await Promise.all(
+        cloudFiles.map(async (file) => {
+          const links = await listShareLinks(file.id);
+          return links.map((link) => ({
+            ...link,
+            fileName: file.name || file.originalName,
+          }));
+        }),
+      );
+      setShareLinks(results.flat());
+    } catch (error) {
+      console.error("Failed to load share links:", error);
+      setShareLinksError("Couldn't load share links. Please try again.");
+    } finally {
+      setShareLinksLoading(false);
+    }
+  }
+
+  async function handleCreateShareLink() {
+    if (!shareDialogFile) return;
+
+    setShareSubmitting(true);
+
+    try {
+      let expiresAt: string | null = null;
+
+      if (shareExpiry !== "never") {
+        const days = Number(shareExpiry);
+        const expiryDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+        expiresAt = expiryDate.toISOString();
+      }
+
+      const result = await createShareLink(shareDialogFile.id, expiresAt);
+
+      const apiBaseUrl =
+        import.meta.env.VITE_API_BASE_URL ??
+        "http://localhost:8000/api/v1";
+
+      const normalizedBaseUrl = apiBaseUrl.replace(/\/+$/, "");
+      const shareUrl =
+        `${normalizedBaseUrl}/shared/${encodeURIComponent(result.token)}`;
+
+      setCreatedShareUrl(shareUrl);
+      await refreshShareLinks();
+      notify("Share link created successfully.");
+    } catch (error) {
+      console.error("Failed to create share link:", error);
+      notify("Couldn't create the share link. Please try again.");
+    } finally {
+      setShareSubmitting(false);
+    }
+  }
+
+  async function handleRevokeShareLink(linkId: string) {
+    if (!window.confirm("Revoke this share link? Anyone using it will lose access.")) {
+      return;
+    }
+
+    try {
+      await revokeShareLink(linkId);
+      await refreshShareLinks();
+      notify("Share link revoked.");
+    } catch (error) {
+      console.error("Failed to revoke share link:", error);
+      notify("Couldn't revoke the share link. Please try again.");
+    }
+  }
+
+  async function handleCopyShareUrl() {
+    if (!createdShareUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(createdShareUrl);
+      notify("Share link copied to clipboard.");
+    } catch (error) {
+      console.error("Failed to copy share link:", error);
+      notify("Couldn't copy automatically. Select and copy the link manually.");
+    }
+  }
 
   async function handleMoveToTrash(fileId: string, fileName: string) {
     setOpenMenuId(null);
 
-    const confirmed = window.confirm(
-      `Move "${fileName}" to Trash?`,
-    );
-
-    if (!confirmed) return;
+    if (!window.confirm(`Move "${fileName}" to Trash?`)) return;
 
     try {
       await moveFileToTrash(fileId);
       await refreshCloudFiles();
+
+      if (activePage === "Trash") await refreshTrash();
+
       notify(`Moved "${fileName}" to Trash.`);
     } catch (error) {
       console.error(`Failed to move ${fileName} to Trash:`, error);
       notify("Couldn't move the file to Trash. Please try again.");
+    }
+  }
+
+  async function handleRestoreTrashedFile(file: TrashedCloudFile) {
+    try {
+      await restoreTrashedFile(file.id);
+      await Promise.all([refreshTrash(), refreshCloudFiles()]);
+      notify(`"${file.name || file.originalName}" restored successfully.`);
+    } catch (error) {
+      console.error(`Failed to restore ${file.name}:`, error);
+      notify("Could not restore this file. Please try again.");
+    }
+  }
+
+  async function handlePermanentlyDeleteTrashedFile(
+    file: TrashedCloudFile,
+  ) {
+    const fileName = file.name || file.originalName;
+
+    if (
+      !window.confirm(
+        `Permanently delete "${fileName}"? This action cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await permanentlyDeleteTrashedFile(file.id);
+      await refreshTrash();
+      notify(`"${fileName}" permanently deleted.`);
+    } catch (error) {
+      console.error(`Failed to permanently delete ${fileName}:`, error);
+      notify("Could not permanently delete this file. Please try again.");
+    }
+  }
+
+  async function handleRefresh() {
+    if (activePage === "Trash") {
+      await refreshTrash();
+    } else if (activePage === "Shared Links") {
+      await refreshShareLinks();
+    } else {
+      await refreshCloudFiles();
     }
   }
 
@@ -266,12 +508,28 @@ export default function DashboardPage() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview.url);
+    };
+  }, [preview]);
+
   const filteredFiles = useMemo(
     () =>
       files.filter((file) =>
         file.name.toLowerCase().includes(search.trim().toLowerCase()),
       ),
     [files, search],
+  );
+
+  const filteredTrash = useMemo(
+    () =>
+      trashedFiles.filter((file) =>
+        (file.name || file.originalName)
+          .toLowerCase()
+          .includes(search.trim().toLowerCase()),
+      ),
+    [trashedFiles, search],
   );
 
   async function createFolder(event: FormEvent<HTMLFormElement>) {
@@ -303,9 +561,7 @@ export default function DashboardPage() {
 
     if (selected.length === 0) return;
 
-    const tooLarge = selected.filter(
-      (file) => file.size > 10 * 1024 * 1024,
-    );
+    const tooLarge = selected.filter((file) => file.size > 10 * 1024 * 1024);
 
     if (tooLarge.length > 0) {
       notify("Each file must be 10 MB or smaller.");
@@ -334,28 +590,37 @@ export default function DashboardPage() {
     }
   }
 
-  function choosePage(label: string) {
+    function choosePage(label: string) {
     setActivePage(label);
     setMobileMenu(false);
     setOpenMenuId(null);
+    setSearch("");
 
-    if (label !== "Dashboard" && label !== "My Files") {
-      notify(`${label} view is not connected yet.`);
+    if (label === "Trash") {
+      void refreshTrash();
+      return;
+    }
+
+    if (label === "Shared Links") {
+      void refreshShareLinks();
+      return;
+    }
+
+    if (!["Dashboard", "My Files"].includes(label)) {
+      notify(`${label} view is not connected to the backend yet.`);
     }
   }
 
   const displayName = user?.name?.trim() || user?.email || "there";
   const profileName = user?.name?.trim() || user?.email || "User";
+  const isTrashPage = activePage === "Trash";
+  const isSharedLinksPage = activePage === "Shared Links";
+  const visibleFiles = filteredFiles;
 
   const pageTitle =
     activePage === "Dashboard"
       ? `Good to see you, ${displayName}!`
       : activePage;
-
-  const visibleFiles =
-    activePage === "My Files"
-      ? filteredFiles
-      : filteredFiles;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -370,12 +635,9 @@ export default function DashboardPage() {
       {notice && (
         <div
           role="status"
-          className="fixed right-5 top-5 z-50 flex max-w-[calc(100vw-2.5rem)] items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-xl"
+          className="fixed right-5 top-5 z-[70] flex max-w-[calc(100vw-2.5rem)] items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-xl"
         >
-          <CheckCircle2
-            size={18}
-            className="shrink-0 text-emerald-400"
-          />
+          <CheckCircle2 size={18} className="shrink-0 text-emerald-400" />
           <span>{notice}</span>
           <button
             onClick={() => setNotice("")}
@@ -405,11 +667,9 @@ export default function DashboardPage() {
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200">
               <Cloud size={26} strokeWidth={2.4} />
             </div>
-
             <span className="text-xl font-bold tracking-tight text-slate-900">
               Cloud<span className="text-blue-600">Vault</span>
             </span>
-
             <button
               className="ml-auto rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden"
               onClick={() => setMobileMenu(false)}
@@ -423,7 +683,6 @@ export default function DashboardPage() {
             <p className="mb-3 px-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
               Workspace
             </p>
-
             <nav className="space-y-1">
               {navigation.map(({ label, icon: Icon }) => (
                 <button
@@ -437,6 +696,11 @@ export default function DashboardPage() {
                 >
                   <Icon size={19} />
                   {label}
+                  {label === "Trash" && trashedFiles.length > 0 && (
+                    <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                      {trashedFiles.length}
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -449,27 +713,19 @@ export default function DashboardPage() {
                   <HardDrive size={17} className="text-blue-600" />
                   Storage
                 </div>
-                <span className="text-xs font-semibold text-blue-700">
-                  24%
-                </span>
+                <span className="text-xs font-semibold text-blue-700">24%</span>
               </div>
-
               <div className="mb-2 flex items-baseline gap-1">
-                <span className="text-xl font-bold text-slate-900">
-                  2.4 GB
-                </span>
+                <span className="text-xl font-bold text-slate-900">2.4 GB</span>
                 <span className="text-xs text-slate-500">of 10 GB</span>
               </div>
-
               <div className="h-2 overflow-hidden rounded-full bg-slate-200">
                 <div className="h-full w-[24%] rounded-full bg-blue-600" />
               </div>
-
               <p className="mt-3 text-xs leading-5 text-slate-500">
                 Your files are stored securely in your vault.
               </p>
             </div>
-
             <p className="mt-4 text-center text-xs text-slate-400">
               CloudVault · MVP Preview
             </p>
@@ -494,7 +750,13 @@ export default function DashboardPage() {
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search files and folders..."
+                placeholder={
+                  isTrashPage
+                    ? "Search deleted files..."
+                    : isSharedLinksPage
+                      ? "Search share links..."
+                      : "Search files and folders..."
+                }
                 aria-label="Search files and folders"
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 pl-11 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-50"
               />
@@ -513,9 +775,7 @@ export default function DashboardPage() {
               <div className="hidden h-9 w-px bg-slate-200 sm:block" />
 
               <button
-                onClick={() =>
-                  notify("Account settings will be connected soon.")
-                }
+                onClick={() => notify("Account settings will be connected soon.")}
                 className="flex items-center gap-2 rounded-xl p-1.5 hover:bg-slate-50"
               >
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-sm font-semibold text-white">
@@ -535,420 +795,620 @@ export default function DashboardPage() {
             <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
                 <p className="mb-2 text-sm font-medium text-blue-600">
-                  YOUR PERSONAL CLOUD
+                  {isTrashPage ? "FILE RECOVERY" : isSharedLinksPage ? "LINK MANAGEMENT" : "YOUR PERSONAL CLOUD"}
                 </p>
                 <h1 className="text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
                   {pageTitle}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500 md:text-base">
-                  Everything you need, organized in one secure place.
+                  {isTrashPage
+                    ? "Restore deleted files or permanently remove them from your vault."
+                    : isSharedLinksPage
+                      ? "Manage links you have created for your files."
+                      : "Everything you need, organized in one secure place."}
                 </p>
               </div>
 
-              <button
-                onClick={() => uploadRef.current?.click()}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700"
-              >
-                <Upload size={18} />
-                Upload files
-              </button>
+              {!isTrashPage && !isSharedLinksPage && (
+                <button
+                  onClick={() => uploadRef.current?.click()}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700"
+                >
+                  <Upload size={18} />
+                  Upload files
+                </button>
+              )}
             </div>
 
-            <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {[
-                {
-                  label: "Total files",
-                  value: String(files.filter((file) => file.type !== "Folder").length),
-                  note: "In this preview",
-                  icon: FileText,
-                  color: "text-blue-600",
-                  bg: "bg-blue-50",
-                },
-                {
-                  label: "Folders",
-                  value: String(files.filter((file) => file.type === "Folder").length),
-                  note: "Keep things organized",
-                  icon: Folder,
-                  color: "text-violet-600",
-                  bg: "bg-violet-50",
-                },
-                {
-                  label: "Storage used",
-                  value: "2.4 GB",
-                  note: "24% of 10 GB",
-                  icon: HardDrive,
-                  color: "text-emerald-600",
-                  bg: "bg-emerald-50",
-                },
-                {
-                  label: "Shared items",
-                  value: "—",
-                  note: "Sharing summary not connected",
-                  icon: Share2,
-                  color: "text-rose-600",
-                  bg: "bg-rose-50",
-                },
-              ].map(({ label, value, note, icon: Icon, color, bg }) => (
-                <div
-                  key={label}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-slate-500">
-                      {label}
-                    </span>
-                    <div className={`rounded-xl p-2.5 ${bg} ${color}`}>
-                      <Icon size={21} />
+            {!isTrashPage && !isSharedLinksPage && (
+              <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  {
+                    label: "Total files",
+                    value: String(files.filter((file) => file.type !== "Folder").length),
+                    note: "In this preview",
+                    icon: FileText,
+                    color: "text-blue-600",
+                    bg: "bg-blue-50",
+                  },
+                  {
+                    label: "Folders",
+                    value: String(files.filter((file) => file.type === "Folder").length),
+                    note: "Keep things organized",
+                    icon: Folder,
+                    color: "text-violet-600",
+                    bg: "bg-violet-50",
+                  },
+                  {
+                    label: "Storage used",
+                    value: "2.4 GB",
+                    note: "24% of 10 GB",
+                    icon: HardDrive,
+                    color: "text-emerald-600",
+                    bg: "bg-emerald-50",
+                  },
+                  {
+                    label: "Shared items",
+                    value: "—",
+                    note: "Sharing summary not connected",
+                    icon: Share2,
+                    color: "text-rose-600",
+                    bg: "bg-rose-50",
+                  },
+                ].map(({ label, value, note, icon: Icon, color, bg }) => (
+                  <div
+                    key={label}
+                    className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-slate-500">{label}</span>
+                      <div className={`rounded-xl p-2.5 ${bg} ${color}`}>
+                        <Icon size={21} />
+                      </div>
                     </div>
+                    <p className="mt-4 text-2xl font-bold tracking-tight text-slate-900">
+                      {value}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">{note}</p>
                   </div>
-                  <p className="mt-4 text-2xl font-bold tracking-tight text-slate-900">
-                    {value}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">{note}</p>
-                </div>
-              ))}
-            </section>
+                ))}
+              </section>
+            )}
 
-            <div className="grid grid-cols-1 items-start gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div
+              className={`grid grid-cols-1 items-start gap-6 ${
+                isTrashPage || isSharedLinksPage ? "" : "2xl:grid-cols-[minmax(0,1fr)_320px]"
+              }`}
+            >
               <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                 <div className="flex flex-col justify-between gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-center">
                   <div>
                     <h2 className="text-lg font-bold text-slate-900">
-                      {activePage === "Dashboard"
-                        ? "Recent files"
-                        : activePage}
+                      {isTrashPage
+                        ? "Deleted files"
+                        : isSharedLinksPage
+                          ? "Your share links"
+                          : activePage === "Dashboard"
+                            ? "Recent files"
+                            : activePage}
                     </h2>
                     <p className="mt-1 text-sm text-slate-500">
-                      {search
-                        ? `${visibleFiles.length} matching items`
-                        : "Your files and folders at a glance"}
+                      {isTrashPage
+                        ? `${filteredTrash.length} deleted item(s)`
+                        : isSharedLinksPage
+                          ? `${shareLinks.length} share link(s)`
+                          : search
+                            ? `${visibleFiles.length} matching items`
+                            : "Your files and folders at a glance"}
                     </p>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() => uploadRef.current?.click()}
-                      className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
-                    >
-                      <Upload size={16} />
-                      Upload
-                    </button>
-
-                    <button
-                      onClick={() => setFolderDialog(true)}
+                      onClick={() => void handleRefresh()}
                       className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3.5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                     >
-                      <FolderPlus size={16} />
-                      New folder
+                      <RefreshCw size={16} />
+                      Refresh
                     </button>
+
+                    {!isTrashPage && !isSharedLinksPage && (
+                      <>
+                        <button
+                          onClick={() => uploadRef.current?.click()}
+                          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                        >
+                          <Upload size={16} />
+                          Upload
+                        </button>
+                        <button
+                          onClick={() => setFolderDialog(true)}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3.5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <FolderPlus size={16} />
+                          New folder
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[650px] text-left">
-                    <thead>
-                      <tr className="border-b border-slate-100 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                        <th className="px-5 py-4">Name</th>
-                        <th className="px-4 py-4">Last modified</th>
-                        <th className="px-4 py-4">Size</th>
-                        <th className="px-4 py-4">
-                          <span className="sr-only">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-
-                    <tbody className="divide-y divide-slate-100">
-                      {visibleFiles.map(
-                        ({
-                          id,
-                          name,
-                          type,
-                          modified,
-                          size,
-                          icon: Icon,
-                          color,
-                          bg,
-                        }) => (
-                          <tr
-                            key={id}
-                            className="group transition hover:bg-slate-50"
-                          >
-                            <td className="px-5 py-3.5">
-                              <button
-                                onClick={() =>
-                                  notify(
-                                    type === "Folder"
-                                      ? `${name} is a folder. Opening folders is not connected yet.`
-                                      : `Selected ${name}.`,
-                                  )
-                                }
-                                className="flex items-center gap-3 text-left"
-                              >
-                                <span
-                                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${bg} ${color}`}
-                                >
-                                  <Icon size={21} />
-                                </span>
-
-                                <span>
-                                  <span className="block max-w-[230px] truncate text-sm font-semibold text-slate-800">
-                                    {name}
-                                  </span>
-                                  <span className="mt-1 block text-xs text-slate-400">
-                                    {type}
-                                  </span>
-                                </span>
-                              </button>
-                            </td>
-
-                            <td className="px-4 py-3.5 text-sm text-slate-500">
-                              {modified}
-                            </td>
-
-                            <td className="px-4 py-3.5 text-sm text-slate-500">
-                              {size}
-                            </td>
-
-                            <td className="px-4 py-3.5">
-                              <div className="relative">
-                                <button
-                                  onClick={() =>
-                                    setOpenMenuId((current) =>
-                                      current === id ? null : id,
-                                    )
-                                  }
-                                  className="rounded-lg p-2 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                                  aria-label={`More actions for ${name}`}
-                                  aria-expanded={openMenuId === id}
-                                >
-                                  <MoreVertical size={18} />
-                                </button>
-
-                                {openMenuId === id && (
-                                  <div className="absolute right-0 top-full z-20 mt-1 min-w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
-                                    {type !== "Folder" ? (
-                                      <>
-                                        <button
-                                          onClick={() =>
-                                            void handleDownload(id, name)
-                                          }
-                                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-                                        >
-                                          <Download size={16} />
-                                          Download
-                                        </button>
-
-                                        <button
-                                          onClick={() =>
-                                            void handleRename(id, name)
-                                          }
-                                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-                                        >
-                                          <Pencil size={16} />
-                                          Rename
-                                        </button>
-
-                                        <button
-                                          onClick={() =>
-                                            void handleMoveToTrash(id, name)
-                                          }
-                                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
-                                        >
-                                          <Trash size={16} />
-                                          Move to Trash
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <button
-                                        onClick={() => {
-                                          setOpenMenuId(null);
-                                          notify(
-                                            "Folder rename and folder actions are not connected yet.",
-                                          );
-                                        }}
-                                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-50"
-                                      >
-                                        <Folder size={16} />
-                                        Folder actions
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ),
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {loading && (
-                  <div className="px-5 py-10 text-center text-sm text-slate-500">
-                    Loading your files…
-                  </div>
-                )}
-
-                {!loading && visibleFiles.length === 0 && (
-                  <div className="px-5 py-14 text-center">
-                    <Search size={28} className="mx-auto text-slate-300" />
-                    <p className="mt-3 font-semibold text-slate-700">
-                      No files found
-                    </p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Try another search term or upload a file.
-                    </p>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4">
-                  <span className="text-xs text-slate-500">
-                    Showing {visibleFiles.length} of {files.length} items
-                  </span>
-
-                  <button
-                    onClick={() => choosePage("My Files")}
-                    className="inline-flex items-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                {fileError && !isTrashPage && (
+                  <div
+                    role="alert"
+                    className="m-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
                   >
-                    View all files <ArrowRight size={16} />
-                  </button>
-                </div>
-              </section>
-
-              <div className="space-y-6">
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h2 className="font-bold text-slate-900">Quick actions</h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Get things done faster.
-                  </p>
-
-                  <div className="mt-5 space-y-2">
-                    <button
-                      onClick={() => uploadRef.current?.click()}
-                      className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-blue-50"
-                    >
-                      <span className="rounded-xl bg-blue-50 p-3 text-blue-600">
-                        <Upload size={20} />
-                      </span>
-                      <span>
-                        <span className="block text-sm font-semibold">
-                          Upload files
-                        </span>
-                        <span className="mt-1 block text-xs text-slate-500">
-                          Add files to your vault
-                        </span>
-                      </span>
-                    </button>
-
-                    <button
-                      onClick={() => setFolderDialog(true)}
-                      className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-violet-50"
-                    >
-                      <span className="rounded-xl bg-violet-50 p-3 text-violet-600">
-                        <FolderPlus size={20} />
-                      </span>
-                      <span>
-                        <span className="block text-sm font-semibold">
-                          Create folder
-                        </span>
-                        <span className="mt-1 block text-xs text-slate-500">
-                          Organize your files
-                        </span>
-                      </span>
-                    </button>
-
-                    <button
-                      onClick={() => choosePage("Shared Links")}
-                      className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-emerald-50"
-                    >
-                      <span className="rounded-xl bg-emerald-50 p-3 text-emerald-600">
-                        <Link2 size={20} />
-                      </span>
-                      <span>
-                        <span className="block text-sm font-semibold">
-                          Shared links
-                        </span>
-                        <span className="mt-1 block text-xs text-slate-500">
-                          Manage shared files
-                        </span>
-                      </span>
-                    </button>
+                    <AlertCircle size={19} className="mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">{fileError}</p>
+                      <button
+                        onClick={() => void refreshCloudFiles()}
+                        className="mt-2 font-semibold underline"
+                      >
+                        Try again
+                      </button>
+                    </div>
                   </div>
-                </section>
+                )}
 
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <h2 className="font-bold text-slate-900">
-                      Recent activity
-                    </h2>
-                    <Clock3 size={17} className="text-slate-400" />
-                  </div>
-
-                  <div className="mt-5 space-y-5">
-                    {[
-                      {
-                        icon: Upload,
-                        color: "text-emerald-600",
-                        bg: "bg-emerald-50",
-                        title: "Ready to upload",
-                        subtitle: "Add your latest files",
-                      },
-                      {
-                        icon: Folder,
-                        color: "text-violet-600",
-                        bg: "bg-violet-50",
-                        title: "Keep files organized",
-                        subtitle: "Create your first folders",
-                      },
-                      {
-                        icon: Share2,
-                        color: "text-blue-600",
-                        bg: "bg-blue-50",
-                        title: "Share with others",
-                        subtitle: "Create a secure share link",
-                      },
-                    ].map(({ icon: Icon, color, bg, title, subtitle }) => (
-                      <div key={title} className="flex items-center gap-3">
-                        <span className={`rounded-xl p-2.5 ${bg} ${color}`}>
-                          <Icon size={18} />
-                        </span>
+                {isTrashPage ? (
+                  <>
+                    {trashError && (
+                      <div
+                        role="alert"
+                        className="m-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                      >
+                        <AlertCircle size={19} className="mt-0.5 shrink-0" />
                         <div>
-                          <p className="text-sm font-semibold text-slate-700">
-                            {title}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {subtitle}
-                          </p>
+                          <p className="font-semibold">{trashError}</p>
+                          <button
+                            onClick={() => void refreshTrash()}
+                            className="mt-2 font-semibold underline"
+                          >
+                            Try again
+                          </button>
                         </div>
                       </div>
-                    ))}
+                    )}
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[700px] text-left">
+                        <thead>
+                          <tr className="border-b border-slate-100 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                            <th className="px-5 py-4">Name</th>
+                            <th className="px-4 py-4">Date deleted</th>
+                            <th className="px-4 py-4">Size</th>
+                            <th className="px-4 py-4">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredTrash.map((file) => (
+                            <tr key={file.id} className="group transition hover:bg-slate-50">
+                              <td className="px-5 py-3.5">
+                                <div className="flex items-center gap-3">
+                                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-500">
+                                    <File size={21} />
+                                  </span>
+                                  <span>
+                                    <span className="block max-w-[260px] truncate text-sm font-semibold text-slate-800">
+                                      {file.name || file.originalName}
+                                    </span>
+                                    <span className="mt-1 block text-xs text-slate-400">
+                                      {file.mimeType || "File"}
+                                    </span>
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3.5 text-sm text-slate-500">
+                                {formatDate(file.deletedAt)}
+                              </td>
+                              <td className="px-4 py-3.5 text-sm text-slate-500">
+                                {formatSize(file.size)}
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <button
+                                    onClick={() => void handleRestoreTrashedFile(file)}
+                                    disabled={trashLoading}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                                  >
+                                    <RotateCcw size={15} />
+                                    Restore
+                                  </button>
+                                  <button
+                                    onClick={() => void handlePermanentlyDeleteTrashedFile(file)}
+                                    disabled={trashLoading}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                  >
+                                    <Trash2 size={15} />
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {trashLoading && (
+                      <div className="px-5 py-10 text-center text-sm text-slate-500">
+                        Loading your trash…
+                      </div>
+                    )}
+
+                    {!trashLoading && !trashError && filteredTrash.length === 0 && (
+                      <div className="px-5 py-16 text-center">
+                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                          <Trash2 size={27} />
+                        </div>
+                        <p className="mt-4 font-semibold text-slate-800">
+                          {search ? "No deleted files match your search" : "Your trash is empty"}
+                        </p>
+                        <p className="mt-2 text-sm text-slate-500">
+                          {search
+                            ? "Try a different search term."
+                            : "Files you move to Trash will appear here."}
+                        </p>
+                        {search && (
+                          <button
+                            onClick={() => setSearch("")}
+                            className="mt-4 text-sm font-semibold text-blue-600"
+                          >
+                            Clear search
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4">
+                      <span className="text-xs text-slate-500">
+                        {filteredTrash.length} of {trashedFiles.length} deleted item(s)
+                      </span>
+                      <button
+                        onClick={() => choosePage("My Files")}
+                        className="inline-flex items-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        Back to My Files <ArrowRight size={16} />
+                      </button>
+                    </div>
+                  </>
+                ) : isSharedLinksPage ? (
+                  <div className="p-5">
+                    {shareLinksError && (
+                      <div role="alert" className="mb-4 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                        <AlertCircle size={19} className="mt-0.5 shrink-0" />
+                        <div className="flex-1">
+                          <p className="font-semibold">{shareLinksError}</p>
+                          <button onClick={() => void refreshShareLinks()} className="mt-2 font-semibold underline">Try again</button>
+                        </div>
+                      </div>
+                    )}
+                    {shareLinksLoading ? (
+                      <div className="py-12 text-center text-sm text-slate-500">Loading share links…</div>
+                    ) : shareLinks.length === 0 ? (
+                      <div className="py-14 text-center">
+                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"><Link2 size={26} /></div>
+                        <p className="mt-4 font-semibold text-slate-800">No share links yet</p>
+                        <p className="mt-2 text-sm text-slate-500">Create a link from a file’s action menu to share it securely.</p>
+                        <button onClick={() => choosePage("My Files")} className="mt-4 text-sm font-semibold text-blue-600 hover:text-blue-700">Browse files</button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {shareLinks.filter((link) => link.fileName.toLowerCase().includes(search.trim().toLowerCase())).map((link) => (
+                          <div key={link.id} className="flex flex-col gap-3 rounded-xl border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex min-w-0 items-start gap-3">
+                              <div className="rounded-xl bg-blue-50 p-3 text-blue-600"><Link2 size={20} /></div>
+                              <div className="min-w-0">
+                                <p className="truncate font-semibold text-slate-800">{link.fileName}</p>
+                                <p className="mt-1 text-xs text-slate-500">Created {formatDate(link.createdAt)}</p>
+                                <p className="mt-1 text-xs text-slate-500">{link.revokedAt ? "Revoked" : link.expiresAt ? `Expires ${formatDate(link.expiresAt)}` : "Never expires"}</p>
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${link.revokedAt ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-700"}`}>{link.revokedAt ? "Revoked" : "Active"}</span>
+                              {!link.revokedAt && <button onClick={() => void handleRevokeShareLink(link.id)} className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50"><Trash2 size={15} /> Revoke</button>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </section>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[700px] text-left">
+                        <thead>
+                          <tr className="border-b border-slate-100 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                            <th className="px-5 py-4">Name</th>
+                            <th className="px-4 py-4">Last modified</th>
+                            <th className="px-4 py-4">Size</th>
+                            <th className="px-4 py-4">
+                              <span className="sr-only">Actions</span>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {visibleFiles.map((file) => {
+                            const Icon = file.icon;
 
-                <section className="rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 p-5 text-white shadow-lg shadow-blue-100">
-                  <div className="flex items-center gap-2 text-blue-100">
-                    <HardDrive size={19} />
-                    <span className="text-sm font-medium">
-                      Your cloud storage
-                    </span>
-                  </div>
+                            return (
+                              <tr key={file.id} className="group transition hover:bg-slate-50">
+                                <td className="px-5 py-3.5">
+                                  <button
+                                    onClick={() => {
+                                      if (file.type === "Folder") {
+                                        notify("Opening folders is not connected yet.");
+                                      } else {
+                                        void handlePreview(file);
+                                      }
+                                    }}
+                                    className="flex items-center gap-3 text-left"
+                                  >
+                                    <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${file.bg} ${file.color}`}>
+                                      <Icon size={21} />
+                                    </span>
+                                    <span>
+                                      <span className="block max-w-[230px] truncate text-sm font-semibold text-slate-800">
+                                        {file.name}
+                                      </span>
+                                      <span className="mt-1 block text-xs text-slate-400">
+                                        {file.type}
+                                      </span>
+                                    </span>
+                                  </button>
+                                </td>
+                                <td className="px-4 py-3.5 text-sm text-slate-500">
+                                  {file.modified}
+                                </td>
+                                <td className="px-4 py-3.5 text-sm text-slate-500">
+                                  {file.size}
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="relative">
+                                    <button
+                                      onClick={() =>
+                                        setOpenMenuId((current) =>
+                                          current === file.id ? null : file.id,
+                                        )
+                                      }
+                                      className="rounded-lg p-2 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                                      aria-label={`More actions for ${file.name}`}
+                                      aria-expanded={openMenuId === file.id}
+                                    >
+                                      <MoreVertical size={18} />
+                                    </button>
 
-                  <p className="mt-4 text-2xl font-bold">
-                    2.4 GB{" "}
-                    <span className="text-sm font-medium text-blue-100">
-                      / 10 GB
-                    </span>
-                  </p>
+                                    {openMenuId === file.id && (
+                                      <div className="absolute right-0 top-full z-20 mt-1 min-w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+                                        {file.type !== "Folder" ? (
+                                          <>
+                                            {(file.mimeType.startsWith("image/") ||
+                                              file.mimeType === "application/pdf") && (
+                                              <button
+                                                onClick={() => void handlePreview(file)}
+                                                disabled={previewLoadingId === file.id}
+                                                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                              >
+                                                <Eye size={16} />
+                                                {previewLoadingId === file.id ? "Loading preview…" : "Preview"}
+                                              </button>
+                                            )}
+                                            <button
+                                              onClick={() => void handleDownload(file.id, file.name)}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                            >
+                                              <Download size={16} />
+                                              Download
+                                            </button>
+                                            <button
+                                              onClick={() => {
+                                                setOpenMenuId(null);
+                                                setShareDialogFile(file);
+                                                setShareExpiry("never");
+                                                setCreatedShareUrl("");
+                                              }}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                            >
+                                              <Share2 size={16} />
+                                              Share link
+                                            </button>
+                                            <button
+                                              onClick={() => void handleRename(file.id, file.name)}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                            >
+                                              <Pencil size={16} />
+                                              Rename
+                                            </button>
+                                            <button
+                                              onClick={() => void handleMoveToTrash(file.id, file.name)}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                                            >
+                                              <Trash size={16} />
+                                              Move to Trash
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            onClick={() => {
+                                              setOpenMenuId(null);
+                                              notify("Folder-specific actions are not connected yet.");
+                                            }}
+                                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-50"
+                                          >
+                                            <Folder size={16} />
+                                            Folder actions
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
 
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/20">
-                    <div className="h-full w-[24%] rounded-full bg-white" />
-                  </div>
+                    {loading && (
+                      <div className="px-5 py-10 text-center text-sm text-slate-500">
+                        Loading your files…
+                      </div>
+                    )}
 
-                  <p className="mt-3 text-xs text-blue-100">
-                    You're using 24% of your available storage.
-                  </p>
-                </section>
-              </div>
+                    {!loading && !fileError && visibleFiles.length === 0 && (
+                      <div className="px-5 py-14 text-center">
+                        <Search size={28} className="mx-auto text-slate-300" />
+                        <p className="mt-3 font-semibold text-slate-700">
+                          {search ? "No matching files found" : "No files yet"}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Try another search term or upload a file.
+                        </p>
+                        {search && (
+                          <button
+                            onClick={() => setSearch("")}
+                            className="mt-3 text-sm font-semibold text-blue-600"
+                          >
+                            Clear search
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4">
+                      <span className="text-xs text-slate-500">
+                        Showing {visibleFiles.length} of {files.length} items
+                      </span>
+                      <button
+                        onClick={() => choosePage("My Files")}
+                        className="inline-flex items-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        View all files <ArrowRight size={16} />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </section>
+
+              {!isTrashPage && !isSharedLinksPage && (
+                <div className="space-y-6">
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <h2 className="font-bold text-slate-900">Quick actions</h2>
+                    <p className="mt-1 text-sm text-slate-500">Get things done faster.</p>
+                    <div className="mt-5 space-y-2">
+                      <button
+                        onClick={() => uploadRef.current?.click()}
+                        className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-blue-50"
+                      >
+                        <span className="rounded-xl bg-blue-50 p-3 text-blue-600">
+                          <Upload size={20} />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold">Upload files</span>
+                          <span className="mt-1 block text-xs text-slate-500">Add files to your vault</span>
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setFolderDialog(true)}
+                        className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-violet-50"
+                      >
+                        <span className="rounded-xl bg-violet-50 p-3 text-violet-600">
+                          <FolderPlus size={20} />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold">Create folder</span>
+                          <span className="mt-1 block text-xs text-slate-500">Organize your files</span>
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => choosePage("Shared Links")}
+                        className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-emerald-50"
+                      >
+                        <span className="rounded-xl bg-emerald-50 p-3 text-emerald-600">
+                          <Link2 size={20} />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold">Shared links</span>
+                          <span className="mt-1 block text-xs text-slate-500">Manage shared files</span>
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => choosePage("Trash")}
+                        className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition hover:bg-red-50"
+                      >
+                        <span className="rounded-xl bg-red-50 p-3 text-red-600">
+                          <Trash2 size={20} />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold">Open Trash</span>
+                          <span className="mt-1 block text-xs text-slate-500">Restore or remove deleted files</span>
+                        </span>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <h2 className="font-bold text-slate-900">Recent activity</h2>
+                      <Clock3 size={17} className="text-slate-400" />
+                    </div>
+                    <div className="mt-5 space-y-5">
+                      {[
+                        {
+                          icon: Upload,
+                          color: "text-emerald-600",
+                          bg: "bg-emerald-50",
+                          title: "Ready to upload",
+                          subtitle: "Add your latest files",
+                        },
+                        {
+                          icon: Folder,
+                          color: "text-violet-600",
+                          bg: "bg-violet-50",
+                          title: "Keep files organized",
+                          subtitle: "Create your first folders",
+                        },
+                        {
+                          icon: Share2,
+                          color: "text-blue-600",
+                          bg: "bg-blue-50",
+                          title: "Share with others",
+                          subtitle: "Create a secure share link",
+                        },
+                      ].map(({ icon: Icon, color, bg, title, subtitle }) => (
+                        <div key={title} className="flex items-center gap-3">
+                          <span className={`rounded-xl p-2.5 ${bg} ${color}`}>
+                            <Icon size={18} />
+                          </span>
+                          <div>
+                            <p className="text-sm font-semibold text-slate-700">{title}</p>
+                            <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 p-5 text-white shadow-lg shadow-blue-100">
+                    <div className="flex items-center gap-2 text-blue-100">
+                      <HardDrive size={19} />
+                      <span className="text-sm font-medium">Your cloud storage</span>
+                    </div>
+                    <p className="mt-4 text-2xl font-bold">
+                      2.4 GB{" "}
+                      <span className="text-sm font-medium text-blue-100">/ 10 GB</span>
+                    </p>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/20">
+                      <div className="h-full w-[24%] rounded-full bg-white" />
+                    </div>
+                    <p className="mt-3 text-xs text-blue-100">
+                      You're using 24% of your available storage.
+                    </p>
+                  </section>
+                </div>
+              )}
             </div>
 
             <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-slate-200 py-5 text-xs text-slate-400 sm:flex-row">
@@ -959,13 +1419,66 @@ export default function DashboardPage() {
         </main>
       </div>
 
+      {preview && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Preview ${preview.name}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePreview();
+          }}
+        >
+          <div className="flex max-h-[95vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-6">
+              <div className="min-w-0">
+                <h2 className="truncate font-semibold text-slate-900">{preview.name}</h2>
+                <p className="text-xs text-slate-500">
+                  {preview.mimeType === "application/pdf" ? "PDF preview" : "Image preview"}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <a
+                  href={preview.url}
+                  download={preview.name}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download size={16} />
+                  <span className="hidden sm:inline">Download</span>
+                </a>
+                <button
+                  onClick={closePreview}
+                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                  aria-label="Close preview"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-3 sm:p-6">
+              {preview.mimeType.startsWith("image/") ? (
+                <img
+                  src={preview.url}
+                  alt={preview.name}
+                  className="max-h-[78vh] max-w-full rounded-lg object-contain shadow-sm"
+                />
+              ) : (
+                <iframe
+                  src={preview.url}
+                  title={`Preview of ${preview.name}`}
+                  className="h-[78vh] w-full rounded-lg border border-slate-200 bg-white"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {folderDialog && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setFolderDialog(false);
-            }
+            if (event.target === event.currentTarget) setFolderDialog(false);
           }}
         >
           <div
@@ -979,12 +1492,8 @@ export default function DashboardPage() {
                 <div className="rounded-xl bg-blue-50 p-3 text-blue-600">
                   <FolderPlus size={22} />
                 </div>
-
                 <div>
-                  <h2
-                    id="folder-dialog-title"
-                    className="text-lg font-bold text-slate-900"
-                  >
+                  <h2 id="folder-dialog-title" className="text-lg font-bold text-slate-900">
                     Create a folder
                   </h2>
                   <p className="mt-1 text-sm text-slate-500">
@@ -992,7 +1501,6 @@ export default function DashboardPage() {
                   </p>
                 </div>
               </div>
-
               <button
                 onClick={() => setFolderDialog(false)}
                 className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"
@@ -1003,13 +1511,9 @@ export default function DashboardPage() {
             </div>
 
             <form onSubmit={createFolder}>
-              <label
-                htmlFor="folder-name"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
+              <label htmlFor="folder-name" className="mb-2 block text-sm font-medium text-slate-700">
                 Folder name
               </label>
-
               <input
                 id="folder-name"
                 autoFocus
@@ -1020,7 +1524,6 @@ export default function DashboardPage() {
                 required
                 className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50"
               />
-
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   type="button"
@@ -1029,7 +1532,6 @@ export default function DashboardPage() {
                 >
                   Cancel
                 </button>
-
                 <button
                   type="submit"
                   className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
@@ -1039,6 +1541,58 @@ export default function DashboardPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {shareDialogFile && (
+        <div
+          className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/50 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !shareSubmitting) {
+              setShareDialogFile(null);
+              setCreatedShareUrl("");
+            }
+          }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="share-dialog-title" className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl bg-blue-50 p-3 text-blue-600"><Share2 size={22} /></div>
+                <div className="min-w-0">
+                  <h2 id="share-dialog-title" className="text-lg font-bold text-slate-900">Share file</h2>
+                  <p className="mt-1 break-words text-sm text-slate-500">Create a secure link for {shareDialogFile.name}.</p>
+                </div>
+              </div>
+              <button onClick={() => { setShareDialogFile(null); setCreatedShareUrl(""); }} disabled={shareSubmitting} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50" aria-label="Close share dialog"><X size={20} /></button>
+            </div>
+
+            {!createdShareUrl ? (
+              <>
+                <label htmlFor="share-expiry" className="mb-2 block text-sm font-medium text-slate-700">Link expiration</label>
+                <select id="share-expiry" value={shareExpiry} onChange={(event) => setShareExpiry(event.target.value)} disabled={shareSubmitting} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                  <option value="never">Never expires</option>
+                  <option value="1">Expires in 1 day</option>
+                  <option value="7">Expires in 7 days</option>
+                  <option value="30">Expires in 30 days</option>
+                </select>
+                <p className="mt-3 text-xs leading-5 text-slate-500">Anyone with this link can access the shared file until the link expires or is revoked.</p>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button type="button" onClick={() => setShareDialogFile(null)} disabled={shareSubmitting} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+                  <button type="button" onClick={() => void handleCreateShareLink()} disabled={shareSubmitting} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"><Link2 size={16} />{shareSubmitting ? "Creating link…" : "Create link"}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"><div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={18} /> Share link created</div><p className="mt-1 text-xs leading-5">Copy the link now. For security, the token is only returned when the link is created.</p></div>
+                <label htmlFor="created-share-url" className="mb-2 mt-5 block text-sm font-medium text-slate-700">Share URL</label>
+                <input id="created-share-url" readOnly value={createdShareUrl} onFocus={(event) => event.currentTarget.select()} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none" />
+                <div className="mt-5 flex justify-end gap-3">
+                  <button type="button" onClick={() => { setShareDialogFile(null); setCreatedShareUrl(""); }} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Done</button>
+                  <button type="button" onClick={() => void handleCopyShareUrl()} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"><Copy size={16} /> Copy link</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
