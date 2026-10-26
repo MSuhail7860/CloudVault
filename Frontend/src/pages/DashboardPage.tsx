@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ChangeEvent } from "react";
 import { getCurrentUser } from "../lib/auth";
 import type { User } from "../lib/auth";
+import TextPreview from "./TextPreview";
 import {
   listFiles,
   listFolders,
@@ -276,11 +277,23 @@ export default function DashboardPage() {
   async function handlePreview(file: FileItem) {
     setOpenMenuId(null);
 
-    if (
-      !file.mimeType.startsWith("image/") &&
-      file.mimeType !== "application/pdf"
-    ) {
-      notify("Preview is available for images and PDF files only.");
+    const isImage = file.mimeType.startsWith("image/");
+    const isPdf = file.mimeType === "application/pdf";
+    const isText =
+      file.mimeType.startsWith("text/") ||
+      [
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-yaml",
+        "application/yaml",
+        "application/markdown",
+      ].includes(file.mimeType);
+
+    if (!isImage && !isPdf && !isText) {
+      notify(
+        "Preview is available for images, PDFs, and text files only."
+      );
       return;
     }
 
@@ -292,6 +305,7 @@ export default function DashboardPage() {
 
       setPreview((current) => {
         if (current) URL.revokeObjectURL(current.url);
+
         return {
           name: file.name,
           mimeType: file.mimeType,
@@ -305,6 +319,7 @@ export default function DashboardPage() {
       setPreviewLoadingId(null);
     }
   }
+
 
   function closePreview() {
     setPreview((current) => {
@@ -1184,7 +1199,16 @@ export default function DashboardPage() {
                                         {file.type !== "Folder" ? (
                                           <>
                                             {(file.mimeType.startsWith("image/") ||
-                                              file.mimeType === "application/pdf") && (
+                                              file.mimeType === "application/pdf" ||
+                                              file.mimeType.startsWith("text/") ||
+                                              [
+                                                "application/json",
+                                                "application/xml",
+                                                "application/javascript",
+                                                "application/x-yaml",
+                                                "application/yaml",
+                                                "application/markdown",
+                                              ].includes(file.mimeType)) && (
                                               <button
                                                 onClick={() => void handlePreview(file)}
                                                 disabled={previewLoadingId === file.id}
@@ -1434,7 +1458,11 @@ export default function DashboardPage() {
               <div className="min-w-0">
                 <h2 className="truncate font-semibold text-slate-900">{preview.name}</h2>
                 <p className="text-xs text-slate-500">
-                  {preview.mimeType === "application/pdf" ? "PDF preview" : "Image preview"}
+                  {preview.mimeType === "application/pdf"
+                    ? "PDF preview"
+                    : preview.mimeType.startsWith("image/")
+                      ? "Image preview"
+                      : "Text preview"}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1462,12 +1490,14 @@ export default function DashboardPage() {
                   alt={preview.name}
                   className="max-h-[78vh] max-w-full rounded-lg object-contain shadow-sm"
                 />
-              ) : (
+              ) : preview.mimeType === "application/pdf" ? (
                 <iframe
                   src={preview.url}
                   title={`Preview of ${preview.name}`}
                   className="h-[78vh] w-full rounded-lg border border-slate-200 bg-white"
                 />
+              ) : (
+                <TextPreview url={preview.url} />
               )}
             </div>
           </div>
