@@ -61,10 +61,14 @@ export const createFolder = async ({
   });
 };
 
-export const listFolders = async (ownerId: string) => {
+export const listFolders = async (
+  ownerId: string,
+  parentId?: string | null,
+) => {
   return prisma.folder.findMany({
     where: {
       ownerId,
+      parentId: parentId ?? null,
     },
     orderBy: {
       createdAt: "desc",

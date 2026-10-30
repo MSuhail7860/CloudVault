@@ -36,17 +36,26 @@ export interface CloudFolder {
   updatedAt: string;
 }
 
-export async function listFiles(folderId?: string | null): Promise<CloudFile[]> {
+export async function listFiles(
+  folderId?: string | null,
+): Promise<CloudFile[]> {
   const response = await api.get<ApiResponse<CloudFile[]>>("/files", {
-    params: { folderId: folderId || undefined },
+    params: {
+      folderId: folderId || undefined,
+    },
   });
 
   return response.data.data;
 }
 
-export async function listFolders(): Promise<CloudFolder[]> {
-  const response =
-    await api.get<ApiResponse<CloudFolder[]>>("/folders");
+export async function listFolders(
+  parentId?: string | null,
+): Promise<CloudFolder[]> {
+  const response = await api.get<ApiResponse<CloudFolder[]>>("/folders", {
+    params: {
+      parentId: parentId || undefined,
+    },
+  });
 
   return response.data.data;
 }
@@ -137,11 +146,8 @@ export async function restoreTrashedFile(
 export async function permanentlyDeleteTrashedFile(
   fileId: string,
 ): Promise<void> {
-  await api.delete(
-    `/files/${encodeURIComponent(fileId)}/permanent`,
-  );
+  await api.delete(`/files/${encodeURIComponent(fileId)}/permanent`);
 }
-
 
 export async function previewCloudFile(fileId: string): Promise<Blob> {
   const response = await api.get(
@@ -153,7 +159,6 @@ export async function previewCloudFile(fileId: string): Promise<Blob> {
 
   return response.data as Blob;
 }
-
 
 export interface ShareLink {
   id: string;

@@ -73,7 +73,12 @@ export const listFolders = async (
       return;
     }
 
-    const folders = await listFoldersService(req.userId);
+    const parentId =
+      typeof req.query.parentId === "string" && req.query.parentId.trim()
+        ? req.query.parentId
+        : null;
+
+    const folders = await listFoldersService(req.userId, parentId);
 
     res.status(200).json({
       success: true,

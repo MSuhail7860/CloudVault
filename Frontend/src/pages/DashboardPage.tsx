@@ -11,6 +11,7 @@ import {
   createFolder as createCloudFolder,
   renameCloudFile,
   moveFileToTrash,
+  deleteCloudFolder,
   listTrashedFiles,
   restoreTrashedFile,
   permanentlyDeleteTrashedFile,
@@ -146,6 +147,8 @@ export default function DashboardPage() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [search, setSearch] = useState("");
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [folderPath, setFolderPath] = useState<CloudFolder[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -185,13 +188,14 @@ export default function DashboardPage() {
     }, 3500);
   }
 
-  async function refreshCloudFiles() {
+  async function refreshCloudFiles(folderId: string | null = currentFolderId) {
     setFileError("");
+    setLoading(true);
 
     try {
       const [cloudFiles, cloudFolders] = await Promise.all([
-        listFiles(),
-        listFolders(),
+        listFiles(folderId),
+        listFolders(folderId),
       ]);
 
       const mapFile = (file: CloudFile): FileItem => {
@@ -235,6 +239,35 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function openFolder(folder: FileItem) {
+    if (folder.type !== "Folder") return;
+
+    const folderInfo: CloudFolder = {
+      id: folder.id,
+      name: folder.name,
+      parentId: currentFolderId,
+      createdAt: folder.modified,
+      updatedAt: folder.modified,
+    };
+
+    setCurrentFolderId(folder.id);
+    setFolderPath((path) => [...path, folderInfo]);
+    setOpenMenuId(null);
+    setSearch("");
+    void refreshCloudFiles(folder.id);
+  }
+
+  function navigateToFolder(index: number) {
+    const nextPath = index < 0 ? [] : folderPath.slice(0, index + 1);
+    const folderId = index < 0 ? null : nextPath[index]?.id ?? null;
+
+    setFolderPath(nextPath);
+    setCurrentFolderId(folderId);
+    setOpenMenuId(null);
+    setSearch("");
+    void refreshCloudFiles(folderId);
   }
 
   async function refreshTrash() {
@@ -439,6 +472,30 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleDeleteFolder(folderId: string, folderName: string) {
+    setOpenMenuId(null);
+
+    if (
+      !window.confirm(
+        `Permanently delete the folder "${folderName}"? Only empty folders can be deleted. This action cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await deleteCloudFolder(folderId);
+      await refreshCloudFiles();
+
+      notify(`Folder "${folderName}" deleted successfully.`);
+    } catch (error) {
+      console.error(`Failed to delete folder "${folderName}":`, error);
+      notify(
+        `Couldn't delete "${folderName}". Make sure the folder contains no files or subfolders.`,
+      );
+    }
+  }
+
   async function handleMoveToTrash(fileId: string, fileName: string) {
     setOpenMenuId(null);
 
@@ -558,8 +615,8 @@ export default function DashboardPage() {
     }
 
     try {
-      await createCloudFolder(name);
-      await refreshCloudFiles();
+      await createCloudFolder(name, currentFolderId);
+      await refreshCloudFiles(currentFolderId);
       setFolderName("");
       setFolderDialog(false);
       notify(`Folder "${name}" created.`);
@@ -587,14 +644,14 @@ export default function DashboardPage() {
 
     for (const file of selected) {
       try {
-        await uploadFile(file);
+        await uploadFile(file, currentFolderId);
         uploaded += 1;
       } catch (error) {
         console.error(`Failed to upload ${file.name}:`, error);
       }
     }
 
-    await refreshCloudFiles();
+    await refreshCloudFiles(currentFolderId);
 
     if (uploaded === selected.length) {
       notify(`${uploaded} file(s) uploaded successfully.`);
@@ -607,6 +664,11 @@ export default function DashboardPage() {
 
     function choosePage(label: string) {
     setActivePage(label);
+    if (label === "My Files" || label === "Dashboard") {
+      setCurrentFolderId(null);
+      setFolderPath([]);
+      void refreshCloudFiles(null);
+    }
     setMobileMenu(false);
     setOpenMenuId(null);
     setSearch("");
@@ -966,6 +1028,33 @@ export default function DashboardPage() {
                   </div>
                 )}
 
+                {!isTrashPage && !isSharedLinksPage && (
+                  <nav
+                    aria-label="Folder breadcrumbs"
+                    className="flex flex-wrap items-center gap-2 px-5 pb-3 text-sm"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => navigateToFolder(-1)}
+                      className={`font-semibold ${folderPath.length === 0 ? "text-slate-800" : "text-blue-600 hover:text-blue-700"}`}
+                    >
+                      My Files
+                    </button>
+                    {folderPath.map((folder, index) => (
+                      <span key={folder.id} className="inline-flex items-center gap-2">
+                        <span className="text-slate-400">/</span>
+                        <button
+                          type="button"
+                          onClick={() => navigateToFolder(index)}
+                          className={`max-w-[180px] truncate font-semibold ${index === folderPath.length - 1 ? "text-slate-800" : "text-blue-600 hover:text-blue-700"}`}
+                        >
+                          {folder.name}
+                        </button>
+                      </span>
+                    ))}
+                  </nav>
+                )}
+
                 {isTrashPage ? (
                   <>
                     {trashError && (
@@ -1153,7 +1242,7 @@ export default function DashboardPage() {
                                   <button
                                     onClick={() => {
                                       if (file.type === "Folder") {
-                                        notify("Opening folders is not connected yet.");
+                                        openFolder(file);
                                       } else {
                                         void handlePreview(file);
                                       }
@@ -1252,18 +1341,17 @@ export default function DashboardPage() {
                                               Move to Trash
                                             </button>
                                           </>
-                                        ) : (
-                                          <button
-                                            onClick={() => {
-                                              setOpenMenuId(null);
-                                              notify("Folder-specific actions are not connected yet.");
-                                            }}
-                                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-50"
-                                          >
-                                            <Folder size={16} />
-                                            Folder actions
-                                          </button>
-                                        )}
+                                          ) : (
+                                            <button
+                                              onClick={() =>
+                                                void handleDeleteFolder(file.id, file.name)
+                                              }
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                                            >
+                                              <Trash size={16} />
+                                              Delete folder
+                                            </button>
+                                          )}
                                       </div>
                                     )}
                                   </div>

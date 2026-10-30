@@ -147,7 +147,7 @@ describe("createFolder", () => {
 });
 
 describe("listFolders", () => {
-  it("lists folders belonging to the requested user", async () => {
+  it("lists root folders belonging to the requested user", async () => {
     vi.mocked(db.folder.findMany).mockResolvedValue([
       folder,
     ] as never);
@@ -155,7 +155,10 @@ describe("listFolders", () => {
     const result = await listFolders(ownerId);
 
     expect(db.folder.findMany).toHaveBeenCalledWith({
-      where: { ownerId },
+      where: {
+        ownerId,
+        parentId: null,
+      },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -167,6 +170,38 @@ describe("listFolders", () => {
     });
 
     expect(result).toEqual([folder]);
+  });
+
+  it("lists child folders for a specified parent", async () => {
+    const childFolder = {
+      ...folder,
+      id: "child-folder-1",
+      name: "Projects",
+      parentId: folderId,
+    };
+
+    vi.mocked(db.folder.findMany).mockResolvedValue([
+      childFolder,
+    ] as never);
+
+    const result = await listFolders(ownerId, folderId);
+
+    expect(db.folder.findMany).toHaveBeenCalledWith({
+      where: {
+        ownerId,
+        parentId: folderId,
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        parentId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    expect(result).toEqual([childFolder]);
   });
 
   it("returns an empty list when the user has no folders", async () => {
