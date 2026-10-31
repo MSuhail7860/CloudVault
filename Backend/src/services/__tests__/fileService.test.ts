@@ -38,6 +38,7 @@ import {
   listFiles,
   getFileForDownload,
   renameFile,
+  moveFile,
   moveFileToTrash,
   listTrashedFiles,
   restoreFileFromTrash,
@@ -312,6 +313,73 @@ describe("renameFile", () => {
     await appError(
       renameFile({ fileId, ownerId, newName: "new.pdf" }),
       "File not found",
+      404,
+    );
+
+    expect(db.file.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("moveFile", () => {
+  it("moves an active file into an owned folder", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
+    vi.mocked(db.folder.findFirst).mockResolvedValue({
+      id: "folder-1",
+    } as never);
+
+    vi.mocked(db.file.update).mockResolvedValue({
+      ...activeFile,
+      folderId: "folder-1",
+    } as never);
+
+    await moveFile({ fileId, ownerId, folderId: "folder-1" });
+
+    expect(db.file.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: fileId },
+        data: { folderId: "folder-1" },
+      }),
+    );
+  });
+
+  it("moves an active file to the root folder", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
+
+    vi.mocked(db.file.update).mockResolvedValue({
+      ...activeFile,
+      folderId: null,
+    } as never);
+
+    await moveFile({ fileId, ownerId, folderId: null });
+
+    expect(db.folder.findFirst).not.toHaveBeenCalled();
+    expect(db.file.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: fileId },
+        data: { folderId: null },
+      }),
+    );
+  });
+
+  it("rejects a missing or inaccessible file", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValue(null);
+
+    await appError(
+      moveFile({ fileId, ownerId, folderId: "folder-1" }),
+      "File not found",
+      404,
+    );
+
+    expect(db.file.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing or inaccessible destination folder", async () => {
+    vi.mocked(db.file.findFirst).mockResolvedValue({ id: fileId } as never);
+    vi.mocked(db.folder.findFirst).mockResolvedValue(null);
+
+    await appError(
+      moveFile({ fileId, ownerId, folderId: "folder-1" }),
+      "Folder not found",
       404,
     );
 

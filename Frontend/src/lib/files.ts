@@ -108,6 +108,18 @@ export async function renameCloudFile(
   return response.data.data;
 }
 
+export async function moveCloudFile(
+  fileId: string,
+  folderId: string | null,
+): Promise<CloudFile> {
+  const response = await api.patch<ApiResponse<CloudFile>>(
+    `/files/${encodeURIComponent(fileId)}/move`,
+    { folderId },
+  );
+
+  return response.data.data;
+}
+
 export async function moveFileToTrash(fileId: string): Promise<void> {
   await api.delete(`/files/${encodeURIComponent(fileId)}`);
 }
@@ -123,6 +135,18 @@ export async function downloadCloudFile(fileId: string): Promise<Blob> {
 
 export async function deleteCloudFolder(folderId: string): Promise<void> {
   await api.delete(`/folders/${encodeURIComponent(folderId)}`);
+}
+
+export async function renameCloudFolder(
+  folderId: string,
+  name: string,
+): Promise<CloudFolder> {
+  const response = await api.patch<ApiResponse<CloudFolder>>(
+    `/folders/${encodeURIComponent(folderId)}/rename`,
+    { name },
+  );
+
+  return response.data.data;
 }
 
 export async function listTrashedFiles(): Promise<TrashedCloudFile[]> {

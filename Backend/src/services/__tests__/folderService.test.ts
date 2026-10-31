@@ -6,6 +6,7 @@ vi.mock("../../config/database.js", () => ({
       findFirst: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
+      update: vi.fn(),
       delete: vi.fn(),
     },
     file: {
@@ -19,6 +20,7 @@ import {
   createFolder,
   listFolders,
   deleteFolder,
+  renameFolder,
 } from "../folderService.js";
 
 const db = vi.mocked(prisma);
@@ -289,5 +291,89 @@ describe("deleteFolder", () => {
     );
 
     expect(db.folder.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("renameFolder", () => {
+  it("renames a folder with a trimmed name", async () => {
+    vi.mocked(db.folder.findFirst).mockResolvedValue({
+      id: folderId,
+    } as never);
+
+    const renamedFolder = {
+      ...folder,
+      name: "Projects",
+    };
+
+    vi.mocked(db.folder.update).mockResolvedValue(
+      renamedFolder as never,
+    );
+
+    const result = await renameFolder({
+      folderId,
+      ownerId,
+      name: " Projects ",
+    });
+
+    expect(db.folder.findFirst).toHaveBeenCalledWith({
+      where: { id: folderId, ownerId },
+      select: { id: true },
+    });
+
+    expect(db.folder.update).toHaveBeenCalledWith({
+      where: { id: folderId },
+      data: { name: "Projects" },
+      select: {
+        id: true,
+        name: true,
+        parentId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    expect(result).toEqual(renamedFolder);
+  });
+
+  it("rejects an empty folder name", async () => {
+    await expectAppError(
+      renameFolder({ folderId, ownerId, name: "   " }),
+      "Folder name cannot be empty",
+      400,
+    );
+
+    expect(db.folder.findFirst).not.toHaveBeenCalled();
+    expect(db.folder.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a folder name longer than 255 characters", async () => {
+    await expectAppError(
+      renameFolder({
+        folderId,
+        ownerId,
+        name: "a".repeat(256),
+      }),
+      "Folder name cannot exceed 255 characters",
+      400,
+    );
+
+    expect(db.folder.findFirst).not.toHaveBeenCalled();
+    expect(db.folder.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects renaming a folder that does not belong to the user", async () => {
+    vi.mocked(db.folder.findFirst).mockResolvedValue(null);
+
+    await expectAppError(
+      renameFolder({
+        folderId,
+        ownerId,
+        name: "Projects",
+      }),
+      "Folder not found",
+      404,
+    );
+
+    expect(db.folder.update).not.toHaveBeenCalled();
   });
 });

@@ -140,3 +140,58 @@ export const deleteFolder = async ({
     },
   });
 };
+
+interface RenameFolderInput {
+  folderId: string;
+  ownerId: string;
+  name: string;
+}
+
+export const renameFolder = async ({
+  folderId,
+  ownerId,
+  name,
+}: RenameFolderInput) => {
+  const normalizedName = name.trim();
+
+  if (!normalizedName) {
+    throw new AppError("Folder name cannot be empty", 400);
+  }
+
+  if (normalizedName.length > 255) {
+    throw new AppError(
+      "Folder name cannot exceed 255 characters",
+      400
+    );
+  }
+
+  const folder = await prisma.folder.findFirst({
+    where: {
+      id: folderId,
+      ownerId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!folder) {
+    throw new AppError("Folder not found", 404);
+  }
+
+  return prisma.folder.update({
+    where: {
+      id: folderId,
+    },
+    data: {
+      name: normalizedName,
+    },
+    select: {
+      id: true,
+      name: true,
+      parentId: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+};

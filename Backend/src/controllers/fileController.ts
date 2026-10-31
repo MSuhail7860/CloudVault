@@ -1,4 +1,3 @@
-
 import type { Response, NextFunction } from "express";
 import type { AuthenticatedRequest } from "../middleware/authMiddleware.js";
 import {
@@ -6,6 +5,7 @@ import {
   listFiles as listFilesService,
   getFileForDownload as getFileForDownloadService,
   renameFile as renameFileService,
+  moveFile as moveFileService,
   moveFileToTrash as moveFileToTrashService,
   listTrashedFiles as listTrashedFilesService,
   restoreFileFromTrash as restoreFileFromTrashService,
@@ -216,6 +216,59 @@ export const renameFile = async (
         ...file,
         size: file.size.toString(),
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Move an active file into a folder or back to the root.
+export const moveFile = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+    const { folderId } = req.body ?? {};
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    if (
+      folderId !== null &&
+      (typeof folderId !== "string" || !folderId.trim())
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "folderId must be a valid folder ID or null",
+      });
+      return;
+    }
+
+    const file = await moveFileService({
+      fileId,
+      ownerId: req.userId,
+      folderId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "File moved successfully",
+      data: file,
     });
   } catch (error) {
     next(error);

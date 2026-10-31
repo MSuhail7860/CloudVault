@@ -33,6 +33,12 @@ interface RenameFileInput {
   newName: string;
 }
 
+interface MoveFileInput {
+  fileId: string;
+  ownerId: string;
+  folderId: string | null;
+}
+
 interface FileTrashInput {
   fileId: string;
   ownerId: string;
@@ -270,6 +276,58 @@ export const renameFile = async ({
       name: normalizedName,
       originalName: normalizedName,
     },
+    select: {
+      id: true,
+      name: true,
+      originalName: true,
+      mimeType: true,
+      size: true,
+      folderId: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  }).then((updatedFile) => ({
+    ...updatedFile,
+    size: updatedFile.size.toString(),
+  }));
+};
+
+// Move an active file into an owned folder or back to the root.
+export const moveFile = async ({
+  fileId,
+  ownerId,
+  folderId,
+}: MoveFileInput) => {
+  const file = await prisma.file.findFirst({
+    where: {
+      id: fileId,
+      ownerId,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  if (folderId !== null) {
+    const folder = await prisma.folder.findFirst({
+      where: {
+        id: folderId,
+        ownerId,
+      },
+      select: { id: true },
+    });
+
+    if (!folder) {
+      throw new AppError("Folder not found", 404);
+    }
+  }
+
+  return prisma.file.update({
+    where: { id: file.id },
+    data: { folderId },
     select: {
       id: true,
       name: true,

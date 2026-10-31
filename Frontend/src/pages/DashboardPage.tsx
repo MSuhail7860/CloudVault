@@ -10,6 +10,8 @@ import {
   downloadCloudFile,
   createFolder as createCloudFolder,
   renameCloudFile,
+  moveCloudFile,
+  renameCloudFolder,
   moveFileToTrash,
   deleteCloudFolder,
   listTrashedFiles,
@@ -152,6 +154,11 @@ export default function DashboardPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState(false);
   const [folderName, setFolderName] = useState("");
+  const [moveDialogFile, setMoveDialogFile] = useState<FileItem | null>(null);
+  const [moveFolders, setMoveFolders] = useState<CloudFolder[]>([]);
+  const [moveDestinationId, setMoveDestinationId] = useState<string>("");
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveSubmitting, setMoveSubmitting] = useState(false);
   const [notice, setNotice] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -238,6 +245,61 @@ export default function DashboardPage() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadMoveFolders(parentId: string | null = null): Promise<CloudFolder[]> {
+    const folders = await listFolders(parentId);
+
+    const nestedFolders = await Promise.all(
+      folders.map((folder) => loadMoveFolders(folder.id)),
+    );
+
+    return folders.flatMap((folder, index) => [
+      folder,
+      ...nestedFolders[index],
+    ]);
+  }
+
+  async function handleOpenMoveDialog(file: FileItem) {
+    setOpenMenuId(null);
+    setMoveDialogFile(file);
+    setMoveDestinationId(currentFolderId ?? "");
+    setMoveLoading(true);
+
+    try {
+      const folders = await loadMoveFolders();
+      setMoveFolders(folders);
+    } catch (error) {
+      console.error("Failed to load folders for moving:", error);
+      notify("Couldn't load folders. Please try again.");
+      setMoveDialogFile(null);
+    } finally {
+      setMoveLoading(false);
+    }
+  }
+
+  async function handleMoveFile() {
+    if (!moveDialogFile) return;
+
+    setMoveSubmitting(true);
+
+    try {
+      await moveCloudFile(
+        moveDialogFile.id,
+        moveDestinationId || null,
+      );
+
+      const movedFileName = moveDialogFile.name;
+      setMoveDialogFile(null);
+      await refreshCloudFiles();
+
+      notify(`"${movedFileName}" moved successfully.`);
+    } catch (error) {
+      console.error("Failed to move file:", error);
+      notify("Couldn't move the file. Please try again.");
+    } finally {
+      setMoveSubmitting(false);
     }
   }
 
@@ -386,6 +448,31 @@ export default function DashboardPage() {
     }
   }
   
+  async function handleRenameFolder(folderId: string, currentName: string) {
+    setOpenMenuId(null);
+
+    const enteredName = window.prompt("Enter the new folder name:", currentName);
+    if (enteredName === null) return;
+
+    const newName = enteredName.trim();
+
+    if (!newName) {
+      notify("Folder name cannot be empty.");
+      return;
+    }
+
+    if (newName === currentName) return;
+
+    try {
+      await renameCloudFolder(folderId, newName);
+      await refreshCloudFiles();
+      notify(`Folder renamed to "${newName}".`);
+    } catch (error) {
+      console.error(`Failed to rename folder "${currentName}":`, error);
+      notify("Couldn't rename the folder. Please try again.");
+    }
+  }
+
   async function refreshShareLinks() {
     setShareLinksLoading(true);
     setShareLinksError("");
@@ -1334,6 +1421,13 @@ export default function DashboardPage() {
                                               Rename
                                             </button>
                                             <button
+                                              onClick={() => void handleOpenMoveDialog(file)}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                            >
+                                              <Folder size={16} />
+                                              Move to folder
+                                            </button>
+                                            <button
                                               onClick={() => void handleMoveToTrash(file.id, file.name)}
                                               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
                                             >
@@ -1342,15 +1436,24 @@ export default function DashboardPage() {
                                             </button>
                                           </>
                                           ) : (
-                                            <button
-                                              onClick={() =>
-                                                void handleDeleteFolder(file.id, file.name)
-                                              }
-                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
-                                            >
-                                              <Trash size={16} />
-                                              Delete folder
-                                            </button>
+                                            <>
+                                              <button
+                                                onClick={() => void handleRenameFolder(file.id, file.name)}
+                                                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                              >
+                                                <Pencil size={16} />
+                                                Rename
+                                              </button>
+                                              <button
+                                                onClick={() =>
+                                                  void handleDeleteFolder(file.id, file.name)
+                                                }
+                                                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                                              >
+                                                <Trash size={16} />
+                                                Delete folder
+                                              </button>
+                                            </>
                                           )}
                                       </div>
                                     )}
@@ -1663,6 +1766,108 @@ export default function DashboardPage() {
         </div>
       )}
 
+            {/* Move File Dialog */}
+      {moveDialogFile && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !moveSubmitting) {
+              setMoveDialogFile(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="move-dialog-title"
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl bg-blue-50 p-3 text-blue-600">
+                  <Folder size={22} />
+                </div>
+                <div className="min-w-0">
+                  <h2
+                    id="move-dialog-title"
+                    className="text-lg font-bold text-slate-900"
+                  >
+                    Move file
+                  </h2>
+                  <p className="mt-1 break-words text-sm text-slate-500">
+                    Choose a destination for {moveDialogFile.name}.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMoveDialogFile(null)}
+                disabled={moveSubmitting}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+                aria-label="Close dialog"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {moveLoading ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                Loading folders…
+              </p>
+            ) : (
+              <>
+                <label
+                  htmlFor="move-destination"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  Destination folder
+                </label>
+
+                <select
+                  id="move-destination"
+                  value={moveDestinationId}
+                  onChange={(event) =>
+                    setMoveDestinationId(event.target.value)
+                  }
+                  disabled={moveSubmitting}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 disabled:opacity-60"
+                >
+                  <option value="">My Files (Root)</option>
+                  {moveFolders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMoveDialogFile(null)}
+                    disabled={moveSubmitting}
+                    className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleMoveFile()}
+                    disabled={moveSubmitting}
+                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Folder size={16} />
+                    {moveSubmitting ? "Moving…" : "Move file"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Share File Dialog */}
       {shareDialogFile && (
         <div
           className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/50 p-4"
@@ -1673,41 +1878,139 @@ export default function DashboardPage() {
             }
           }}
         >
-          <div role="dialog" aria-modal="true" aria-labelledby="share-dialog-title" className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="share-dialog-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-blue-50 p-3 text-blue-600"><Share2 size={22} /></div>
+                <div className="rounded-xl bg-blue-50 p-3 text-blue-600">
+                  <Share2 size={22} />
+                </div>
                 <div className="min-w-0">
-                  <h2 id="share-dialog-title" className="text-lg font-bold text-slate-900">Share file</h2>
-                  <p className="mt-1 break-words text-sm text-slate-500">Create a secure link for {shareDialogFile.name}.</p>
+                  <h2
+                    id="share-dialog-title"
+                    className="text-lg font-bold text-slate-900"
+                  >
+                    Share file
+                  </h2>
+                  <p className="mt-1 break-words text-sm text-slate-500">
+                    Create a secure link for {shareDialogFile.name}.
+                  </p>
                 </div>
               </div>
-              <button onClick={() => { setShareDialogFile(null); setCreatedShareUrl(""); }} disabled={shareSubmitting} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50" aria-label="Close share dialog"><X size={20} /></button>
+
+              <button
+                onClick={() => {
+                  setShareDialogFile(null);
+                  setCreatedShareUrl("");
+                }}
+                disabled={shareSubmitting}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+                aria-label="Close share dialog"
+              >
+                <X size={20} />
+              </button>
             </div>
 
             {!createdShareUrl ? (
               <>
-                <label htmlFor="share-expiry" className="mb-2 block text-sm font-medium text-slate-700">Link expiration</label>
-                <select id="share-expiry" value={shareExpiry} onChange={(event) => setShareExpiry(event.target.value)} disabled={shareSubmitting} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                <label
+                  htmlFor="share-expiry"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  Link expiration
+                </label>
+
+                <select
+                  id="share-expiry"
+                  value={shareExpiry}
+                  onChange={(event) => setShareExpiry(event.target.value)}
+                  disabled={shareSubmitting}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50"
+                >
                   <option value="never">Never expires</option>
                   <option value="1">Expires in 1 day</option>
                   <option value="7">Expires in 7 days</option>
                   <option value="30">Expires in 30 days</option>
                 </select>
-                <p className="mt-3 text-xs leading-5 text-slate-500">Anyone with this link can access the shared file until the link expires or is revoked.</p>
+
+                <p className="mt-3 text-xs leading-5 text-slate-500">
+                  Anyone with this link can access the shared file until the
+                  link expires or is revoked.
+                </p>
+
                 <div className="mt-6 flex justify-end gap-3">
-                  <button type="button" onClick={() => setShareDialogFile(null)} disabled={shareSubmitting} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
-                  <button type="button" onClick={() => void handleCreateShareLink()} disabled={shareSubmitting} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"><Link2 size={16} />{shareSubmitting ? "Creating link…" : "Create link"}</button>
+                  <button
+                    type="button"
+                    onClick={() => setShareDialogFile(null)}
+                    disabled={shareSubmitting}
+                    className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateShareLink()}
+                    disabled={shareSubmitting}
+                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Link2 size={16} />
+                    {shareSubmitting ? "Creating link…" : "Create link"}
+                  </button>
                 </div>
               </>
             ) : (
               <>
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"><div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={18} /> Share link created</div><p className="mt-1 text-xs leading-5">Copy the link now. For security, the token is only returned when the link is created.</p></div>
-                <label htmlFor="created-share-url" className="mb-2 mt-5 block text-sm font-medium text-slate-700">Share URL</label>
-                <input id="created-share-url" readOnly value={createdShareUrl} onFocus={(event) => event.currentTarget.select()} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none" />
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <CheckCircle2 size={18} />
+                    Share link created
+                  </div>
+                  <p className="mt-1 text-xs leading-5">
+                    Copy the link now. For security, the token is only returned
+                    when the link is created.
+                  </p>
+                </div>
+
+                <label
+                  htmlFor="created-share-url"
+                  className="mb-2 mt-5 block text-sm font-medium text-slate-700"
+                >
+                  Share URL
+                </label>
+
+                <input
+                  id="created-share-url"
+                  readOnly
+                  value={createdShareUrl}
+                  onFocus={(event) => event.currentTarget.select()}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none"
+                />
+
                 <div className="mt-5 flex justify-end gap-3">
-                  <button type="button" onClick={() => { setShareDialogFile(null); setCreatedShareUrl(""); }} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Done</button>
-                  <button type="button" onClick={() => void handleCopyShareUrl()} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"><Copy size={16} /> Copy link</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShareDialogFile(null);
+                      setCreatedShareUrl("");
+                    }}
+                    className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    Done
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyShareUrl()}
+                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    <Copy size={16} />
+                    Copy link
+                  </button>
                 </div>
               </>
             )}

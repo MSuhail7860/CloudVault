@@ -4,6 +4,7 @@ import {
   listFiles,
   downloadFile,
   renameFile,
+  moveFile,
   moveFileToTrash,
   listTrashedFiles,
   restoreFileFromTrash,
@@ -56,6 +57,9 @@ router.get("/:id/download", downloadFile);
 
 // PATCH /api/v1/files/:id/rename
 router.patch("/:id/rename", renameFile);
+
+// PATCH /api/v1/files/:id/move
+router.patch("/:id/move", moveFile);
 
 // DELETE /api/v1/files/:id
 // Moves the file to Trash; does not permanently delete it.

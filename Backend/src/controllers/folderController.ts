@@ -4,6 +4,7 @@ import {
   createFolder as createFolderService,
   listFolders as listFoldersService,
   deleteFolder as deleteFolderService,
+  renameFolder as renameFolderService,
 } from "../services/folderService.js";
 
 // POST /api/v1/folders
@@ -123,6 +124,55 @@ export const deleteFolder = async (
     res.status(200).json({
       success: true,
       message: "Folder deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PATCH /api/v1/folders/:folderId/rename
+export const renameFolder = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const folderId = req.params.folderId;
+    const { name } = req.body ?? {};
+
+    if (typeof folderId !== "string" || !folderId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid folder ID is required",
+      });
+      return;
+    }
+
+    if (typeof name !== "string" || !name.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid folder name is required",
+      });
+      return;
+    }
+
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const folder = await renameFolderService({
+      folderId,
+      ownerId: req.userId,
+      name,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: folder,
     });
   } catch (error) {
     next(error);
