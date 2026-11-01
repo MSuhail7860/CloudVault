@@ -17,9 +17,13 @@ import {
   listTrashedFiles,
   restoreTrashedFile,
   permanentlyDeleteTrashedFile,
+  listFileVersions,
+  uploadFileVersion,
+  restoreFileVersion,
   type CloudFile,
   type CloudFolder,
   type TrashedCloudFile,
+  type FileVersion,
   createShareLink,
   listShareLinks,
   revokeShareLink,
@@ -171,6 +175,16 @@ export default function DashboardPage() {
 
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [versionDialogFile, setVersionDialogFile] = useState<FileItem | null>(null);
+  const [fileVersions, setFileVersions] = useState<FileVersion[]>([]);
+  const [allFileVersions, setAllFileVersions] = useState<{ file: FileItem; version: FileVersion }[]>([]);
+  const [allVersionsLoading, setAllVersionsLoading] = useState(false);
+  const [allVersionsError, setAllVersionsError] = useState("");
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState("");
+  const [versionUploading, setVersionUploading] = useState(false);
+  const [versionRestoringId, setVersionRestoringId] = useState<string | null>(null);
+  const versionUploadRef = useRef<HTMLInputElement>(null);
 
   const uploadRef = useRef<HTMLInputElement>(null);
   const noticeTimer = useRef<number | undefined>(undefined);
@@ -259,6 +273,63 @@ export default function DashboardPage() {
       folder,
       ...nestedFolders[index],
     ]);
+  }
+
+  async function loadAllFileVersions() {
+    setAllVersionsLoading(true);
+    setAllVersionsError("");
+
+    try {
+      const folders = await loadMoveFolders();
+
+      const filesByFolder = await Promise.all([
+        listFiles(null),
+        ...folders.map((folder) => listFiles(folder.id)),
+      ]);
+
+      const cloudFiles = filesByFolder.flat();
+
+      const mapFile = (file: CloudFile): FileItem => {
+        const mimeType = file.mimeType || "application/octet-stream";
+        const presentation = getFilePresentation(mimeType);
+
+        return {
+          id: file.id,
+          name: file.name || file.originalName,
+          type: presentation.type,
+          mimeType,
+          modified: formatDate(file.updatedAt || file.createdAt),
+          size: formatSize(file.size),
+          icon: presentation.icon,
+          color: presentation.color,
+          bg: presentation.bg,
+        };
+      };
+
+      const versionResults = await Promise.all(
+        cloudFiles.map(async (cloudFile) => {
+          const file = mapFile(cloudFile);
+          const versions = await listFileVersions(file.id);
+
+          return versions.map((version) => ({ file, version }));
+        }),
+      );
+
+      const allVersions = versionResults.flat();
+
+      allVersions.sort(
+        (a, b) =>
+          new Date(b.version.createdAt).getTime() -
+          new Date(a.version.createdAt).getTime(),
+      );
+
+      setAllFileVersions(allVersions);
+    } catch (error) {
+      console.error("Failed to load all file versions:", error);
+      setAllVersionsError("Unable to load file versions. Please try again.");
+    } finally {
+      setAllVersionsLoading(false);
+    }
   }
 
   async function handleOpenMoveDialog(file: FileItem) {
@@ -415,6 +486,102 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleOpenVersions(file: FileItem) {
+    setOpenMenuId(null);
+    setVersionDialogFile(file);
+    setFileVersions([]);
+    setVersionsError("");
+    setVersionsLoading(true);
+
+    try {
+      const versions = await listFileVersions(file.id);
+      setFileVersions(versions);
+    } catch (error) {
+      console.error(`Failed to load versions for ${file.name}:`, error);
+      setVersionsError("Unable to load version history. Please try again.");
+    } finally {
+      setVersionsLoading(false);
+    }
+  }
+
+  async function handleUploadNewVersion(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+
+    if (!selectedFile || !versionDialogFile) return;
+
+    setVersionUploading(true);
+
+    try {
+      await uploadFileVersion(versionDialogFile.id, selectedFile);
+
+      const fileName = versionDialogFile.name;
+
+      event.target.value = "";
+      await refreshCloudFiles();
+
+      const versions = await listFileVersions(versionDialogFile.id);
+      setFileVersions(versions);
+
+      notify(`New version uploaded for "${fileName}".`);
+    } catch (error) {
+      console.error("Failed to upload new file version:", error);
+      notify("Couldn't upload the new version. Please try again.");
+    } finally {
+      setVersionUploading(false);
+    }
+  }
+
+  async function handleRestoreVersion(version: FileVersion) {
+    if (!versionDialogFile) return;
+
+    const confirmed = window.confirm(
+      `Restore version ${version.version}? Your current file will be preserved in version history.`,
+    );
+
+    if (!confirmed) return;
+
+    setVersionRestoringId(version.id);
+
+    try {
+      await restoreFileVersion(versionDialogFile.id, version.id);
+
+      await refreshCloudFiles();
+
+      const versions = await listFileVersions(versionDialogFile.id);
+      setFileVersions(versions);
+
+      notify(`Version ${version.version} restored successfully.`);
+    } catch (error) {
+      console.error("Failed to restore file version:", error);
+      notify("Couldn't restore this version. Please try again.");
+    } finally {
+      setVersionRestoringId(null);
+    }
+  }
+
+  async function handleRestoreFromVersionsPage(
+    file: FileItem,
+    version: FileVersion,
+  ) {
+    const confirmed = window.confirm(
+      `Restore version ${version.version} of "${file.name}"? The current file will be preserved in version history.`,
+    );
+
+    if (!confirmed) return;
+
+    setVersionRestoringId(version.id);
+
+    try {
+      await restoreFileVersion(file.id, version.id);
+      await Promise.all([refreshCloudFiles(), loadAllFileVersions()]);
+      notify(`Version ${version.version} of "${file.name}" restored successfully.`);
+    } catch (error) {
+      console.error(`Failed to restore version ${version.version} of ${file.name}:`, error);
+      notify("Couldn't restore this version. Please try again.");
+    } finally {
+      setVersionRestoringId(null);
+    }
+  }
 
   function closePreview() {
     setPreview((current) => {
@@ -640,6 +807,8 @@ export default function DashboardPage() {
       await refreshTrash();
     } else if (activePage === "Shared Links") {
       await refreshShareLinks();
+    } else if (activePage === "Versions") {
+      await loadAllFileVersions();
     } else {
       await refreshCloudFiles();
     }
@@ -749,13 +918,15 @@ export default function DashboardPage() {
     }
   }
 
-    function choosePage(label: string) {
+  function choosePage(label: string) {
     setActivePage(label);
+
     if (label === "My Files" || label === "Dashboard") {
       setCurrentFolderId(null);
       setFolderPath([]);
       void refreshCloudFiles(null);
     }
+
     setMobileMenu(false);
     setOpenMenuId(null);
     setSearch("");
@@ -770,6 +941,13 @@ export default function DashboardPage() {
       return;
     }
 
+    if (label === "Versions") {
+      setCurrentFolderId(null);
+      setFolderPath([]);
+      void loadAllFileVersions();
+      return;
+    }
+
     if (!["Dashboard", "My Files"].includes(label)) {
       notify(`${label} view is not connected to the backend yet.`);
     }
@@ -779,6 +957,7 @@ export default function DashboardPage() {
   const profileName = user?.name?.trim() || user?.email || "User";
   const isTrashPage = activePage === "Trash";
   const isSharedLinksPage = activePage === "Shared Links";
+  const isVersionsPage = activePage === "Versions";
   const visibleFiles = filteredFiles;
 
   const pageTitle =
@@ -959,7 +1138,13 @@ export default function DashboardPage() {
             <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
               <div>
                 <p className="mb-2 text-sm font-medium text-blue-600">
-                  {isTrashPage ? "FILE RECOVERY" : isSharedLinksPage ? "LINK MANAGEMENT" : "YOUR PERSONAL CLOUD"}
+                  {isTrashPage
+                    ? "FILE RECOVERY"
+                    : isSharedLinksPage
+                      ? "LINK MANAGEMENT"
+                      : isVersionsPage
+                        ? "VERSION CONTROL"
+                        : "YOUR PERSONAL CLOUD"}
                 </p>
                 <h1 className="text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
                   {pageTitle}
@@ -969,11 +1154,13 @@ export default function DashboardPage() {
                     ? "Restore deleted files or permanently remove them from your vault."
                     : isSharedLinksPage
                       ? "Manage links you have created for your files."
-                      : "Everything you need, organized in one secure place."}
+                      : isVersionsPage
+                        ? "Review and restore previous versions of your files."
+                        : "Everything you need, organized in one secure place."}
                 </p>
               </div>
 
-              {!isTrashPage && !isSharedLinksPage && (
+              {!isTrashPage && !isSharedLinksPage && !isVersionsPage && (
                 <button
                   onClick={() => uploadRef.current?.click()}
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700"
@@ -984,7 +1171,7 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {!isTrashPage && !isSharedLinksPage && (
+            {!isTrashPage && !isSharedLinksPage && !isVersionsPage && (
               <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {[
                   {
@@ -1041,7 +1228,9 @@ export default function DashboardPage() {
 
             <div
               className={`grid grid-cols-1 items-start gap-6 ${
-                isTrashPage || isSharedLinksPage ? "" : "2xl:grid-cols-[minmax(0,1fr)_320px]"
+                isTrashPage || isSharedLinksPage || isVersionsPage
+                  ? ""
+                  : "2xl:grid-cols-[minmax(0,1fr)_320px]"
               }`}
             >
               <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -1061,7 +1250,9 @@ export default function DashboardPage() {
                         ? `${filteredTrash.length} deleted item(s)`
                         : isSharedLinksPage
                           ? `${shareLinks.length} share link(s)`
-                          : search
+                          : isVersionsPage
+                            ? `${allFileVersions.length} previous version(s)`
+                            : search
                             ? `${visibleFiles.length} matching items`
                             : "Your files and folders at a glance"}
                     </p>
@@ -1076,7 +1267,7 @@ export default function DashboardPage() {
                       Refresh
                     </button>
 
-                    {!isTrashPage && !isSharedLinksPage && (
+                    {!isTrashPage && !isSharedLinksPage && !isVersionsPage && (
                       <>
                         <button
                           onClick={() => uploadRef.current?.click()}
@@ -1115,7 +1306,7 @@ export default function DashboardPage() {
                   </div>
                 )}
 
-                {!isTrashPage && !isSharedLinksPage && (
+                {!isTrashPage && !isSharedLinksPage && !isVersionsPage && (
                   <nav
                     aria-label="Folder breadcrumbs"
                     className="flex flex-wrap items-center gap-2 px-5 pb-3 text-sm"
@@ -1305,6 +1496,101 @@ export default function DashboardPage() {
                       </div>
                     )}
                   </div>
+                ) : isVersionsPage ? (
+                  <div className="p-5">
+                    {allVersionsError && (
+                      <div
+                        role="alert"
+                        className="mb-4 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                      >
+                        <AlertCircle size={19} className="mt-0.5 shrink-0" />
+                        <div className="flex-1">
+                          <p className="font-semibold">{allVersionsError}</p>
+                          <button
+                            type="button"
+                            onClick={() => void loadAllFileVersions()}
+                            className="mt-2 font-semibold underline"
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {allVersionsLoading ? (
+                      <div className="py-12 text-center text-sm text-slate-500">
+                        <RefreshCw size={20} className="mx-auto mb-3 animate-spin" />
+                        Loading file versions…
+                      </div>
+                    ) : allFileVersions.length === 0 ? (
+                      <div className="py-14 text-center">
+                        <History size={30} className="mx-auto text-slate-300" />
+                        <p className="mt-4 font-semibold text-slate-800">
+                          No previous versions found
+                        </p>
+                        <p className="mt-2 text-sm text-slate-500">
+                          Previous versions will appear here after you upload a new version of a file.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => choosePage("My Files")}
+                          className="mt-4 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                        >
+                          Browse files
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allFileVersions
+                          .filter(({ file }) =>
+                            file.name.toLowerCase().includes(search.trim().toLowerCase()),
+                          )
+                          .map(({ file, version }) => (
+                            <div
+                              key={`${file.id}-${version.id}`}
+                              className="flex flex-col gap-3 rounded-xl border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between"
+                            >
+                              <div className="flex min-w-0 items-start gap-3">
+                                <div className={`rounded-xl p-3 ${file.bg} ${file.color}`}>
+                                  <History size={20} />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate font-semibold text-slate-800">
+                                    {file.name}
+                                  </p>
+                                  <p className="mt-1 text-sm text-slate-600">
+                                    Version {version.version}
+                                  </p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    {formatDate(version.createdAt)} · {formatSize(version.size)}
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void handleRestoreFromVersionsPage(file, version)}
+                                disabled={versionRestoringId !== null || allVersionsLoading}
+                                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-blue-200 px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {versionRestoringId === version.id ? (
+                                  <RefreshCw size={15} className="animate-spin" />
+                                ) : (
+                                  <RotateCcw size={15} />
+                                )}
+                                {versionRestoringId === version.id ? "Restoring…" : "Restore"}
+                              </button>
+                            </div>
+                          ))}
+                        {allFileVersions.filter(({ file }) =>
+                          file.name.toLowerCase().includes(search.trim().toLowerCase()),
+                        ).length === 0 && (
+                          <div className="py-10 text-center text-sm text-slate-500">
+                            No versions match “{search}”.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <>
                     <div className="overflow-x-auto">
@@ -1400,6 +1686,13 @@ export default function DashboardPage() {
                                             >
                                               <Download size={16} />
                                               Download
+                                            </button>
+                                            <button
+                                              onClick={() => void handleOpenVersions(file)}
+                                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                                            >
+                                              <History size={16} />
+                                              Version History
                                             </button>
                                             <button
                                               onClick={() => {
@@ -1507,7 +1800,7 @@ export default function DashboardPage() {
                 )}
               </section>
 
-              {!isTrashPage && !isSharedLinksPage && (
+              {!isTrashPage && !isSharedLinksPage && !isVersionsPage && (
                 <div className="space-y-6">
                   <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <h2 className="font-bold text-slate-900">Quick actions</h2>
@@ -1766,7 +2059,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-            {/* Move File Dialog */}
+      {/* Move File Dialog */}
       {moveDialogFile && (
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-4"
@@ -1863,6 +2156,159 @@ export default function DashboardPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Version History Dialog */}
+      {versionDialogFile && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-4"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !versionUploading &&
+              !versionRestoringId
+            ) {
+              setVersionDialogFile(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="versions-dialog-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl bg-blue-50 p-3 text-blue-600">
+                  <History size={22} />
+                </div>
+                <div className="min-w-0">
+                  <h2
+                    id="versions-dialog-title"
+                    className="text-lg font-bold text-slate-900"
+                  >
+                    Version History
+                  </h2>
+                  <p className="mt-1 break-words text-sm text-slate-500">
+                    Manage previous versions of {versionDialogFile.name}.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setVersionDialogFile(null)}
+                disabled={versionUploading || versionRestoringId !== null}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+                aria-label="Close dialog"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <input
+              ref={versionUploadRef}
+              type="file"
+              className="hidden"
+              onChange={(event) => void handleUploadNewVersion(event)}
+            />
+
+            <button
+              type="button"
+              onClick={() => versionUploadRef.current?.click()}
+              disabled={versionUploading || versionsLoading || versionRestoringId !== null}
+              className="mb-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {versionUploading ? (
+                <RefreshCw size={17} className="animate-spin" />
+              ) : (
+                <Upload size={17} />
+              )}
+              {versionUploading ? "Uploading new version…" : "Upload New Version"}
+            </button>
+
+            {versionsLoading ? (
+              <p className="py-8 text-center text-sm text-slate-500">
+                Loading version history…
+              </p>
+            ) : versionsError ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                <p>{versionsError}</p>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenVersions(versionDialogFile)}
+                  className="mt-2 font-semibold underline"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : fileVersions.length === 0 ? (
+              <div className="rounded-xl border border-slate-200 py-8 text-center">
+                <History size={28} className="mx-auto text-slate-300" />
+                <p className="mt-3 text-sm font-semibold text-slate-700">
+                  No previous versions
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Upload a new version to start tracking changes.
+                </p>
+              </div>
+            ) : (
+              <div className="max-h-80 space-y-3 overflow-y-auto">
+                {fileVersions.map((version) => (
+                  <div
+                    key={version.id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-4"
+                  >
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="rounded-lg bg-slate-100 p-2 text-slate-600">
+                        <File size={19} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800">
+                          Version {version.version}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {formatDate(version.createdAt)}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {formatSize(version.size)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleRestoreVersion(version)}
+                      disabled={versionRestoringId !== null || versionUploading}
+                      className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-blue-200 px-3 py-2 text-xs font-semibold text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {versionRestoringId === version.id ? (
+                        <RefreshCw size={14} className="animate-spin" />
+                      ) : (
+                        <RotateCcw size={14} />
+                      )}
+                      {versionRestoringId === version.id
+                        ? "Restoring…"
+                        : "Restore"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setVersionDialogFile(null)}
+                disabled={versionUploading || versionRestoringId !== null}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

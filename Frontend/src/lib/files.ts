@@ -17,6 +17,24 @@ export interface CloudFile {
   updatedAt: string;
 }
 
+export interface FileVersion {
+  id: string;
+  version: number;
+  mimeType: string;
+  size: string;
+  createdAt: string;
+}
+
+export interface UploadedFileVersion {
+  version: FileVersion;
+  file: CloudFile;
+}
+
+export interface RestoredFileVersion {
+  savedCurrentVersion: FileVersion;
+  file: CloudFile;
+}
+
 export interface TrashedCloudFile {
   id: string;
   name: string;
@@ -115,6 +133,49 @@ export async function moveCloudFile(
   const response = await api.patch<ApiResponse<CloudFile>>(
     `/files/${encodeURIComponent(fileId)}/move`,
     { folderId },
+  );
+
+  return response.data.data;
+}
+
+// File versioning APIs
+
+export async function listFileVersions(
+  fileId: string,
+): Promise<FileVersion[]> {
+  const response = await api.get<ApiResponse<FileVersion[]>>(
+    `/files/${encodeURIComponent(fileId)}/versions`,
+  );
+
+  return response.data.data;
+}
+
+export async function uploadFileVersion(
+  fileId: string,
+  file: File,
+): Promise<UploadedFileVersion> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await api.post<ApiResponse<UploadedFileVersion>>(
+    `/files/${encodeURIComponent(fileId)}/versions`,
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    },
+  );
+
+  return response.data.data;
+}
+
+export async function restoreFileVersion(
+  fileId: string,
+  versionId: string,
+): Promise<RestoredFileVersion> {
+  const response = await api.post<ApiResponse<RestoredFileVersion>>(
+    `/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/restore`,
   );
 
   return response.data.data;
