@@ -5,6 +5,8 @@ import type { User } from "../lib/auth";
 import TextPreview from "./TextPreview";
 import {
   listFiles,
+  searchCloudFiles,
+  getDashboardStats,
   listFolders,
   uploadFile,
   downloadCloudFile,
@@ -28,6 +30,7 @@ import {
   listShareLinks,
   revokeShareLink,
   type ShareLink,
+  type DashboardStats,
 } from "../lib/files";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -149,6 +152,17 @@ function getFilePresentation(mimeType: string) {
   };
 }
 
+const STORAGE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // Provisional frontend quota
+
+function getStorageUsage(storageBytes: string | undefined) {
+  const usedBytes = Number(storageBytes ?? 0);
+  const safeBytes = Number.isFinite(usedBytes) && usedBytes >= 0 ? usedBytes : 0;
+  return {
+    used: formatSize(safeBytes),
+    percentage: Number(((safeBytes / STORAGE_QUOTA_BYTES) * 100).toFixed(2)),
+  };
+}
+
 export default function DashboardPage() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [search, setSearch] = useState("");
@@ -168,6 +182,11 @@ export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [fileError, setFileError] = useState("");
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+  const [dashboardStatsError, setDashboardStatsError] = useState("");
+  const [searchResults, setSearchResults] = useState<FileItem[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   const [trashedFiles, setTrashedFiles] = useState<TrashedCloudFile[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
@@ -259,6 +278,16 @@ export default function DashboardPage() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshDashboardStats() {
+    setDashboardStatsError("");
+    try {
+      setDashboardStats(await getDashboardStats());
+    } catch (error) {
+      console.error("Failed to load dashboard statistics:", error);
+      setDashboardStatsError("Dashboard statistics are temporarily unavailable.");
     }
   }
 
@@ -810,7 +839,7 @@ export default function DashboardPage() {
     } else if (activePage === "Versions") {
       await loadAllFileVersions();
     } else {
-      await refreshCloudFiles();
+      await Promise.all([refreshCloudFiles(), refreshDashboardStats()]);
     }
   }
 
@@ -826,6 +855,7 @@ export default function DashboardPage() {
       });
 
     void refreshCloudFiles();
+    void refreshDashboardStats();
 
     return () => {
       active = false;
@@ -842,13 +872,67 @@ export default function DashboardPage() {
     };
   }, [preview]);
 
-  const filteredFiles = useMemo(
-    () =>
-      files.filter((file) =>
-        file.name.toLowerCase().includes(search.trim().toLowerCase()),
-      ),
-    [files, search],
-  );
+  const isTrashPage = activePage === "Trash";
+  const isSharedLinksPage = activePage === "Shared Links";
+  const isVersionsPage = activePage === "Versions";
+
+  useEffect(() => {
+    const query = search.trim();
+    if (!query || isTrashPage || isSharedLinksPage || isVersionsPage) {
+      setSearchResults([]);
+      setSearchError("");
+      setSearchLoading(false);
+      return;
+    }
+
+    let active = true;
+    setSearchLoading(true);
+    setSearchError("");
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const result = await searchCloudFiles(query, 1, 100);
+        const mapped: FileItem[] = result.data.map((file) => {
+          const mimeType = file.mimeType || "application/octet-stream";
+          const presentation = getFilePresentation(mimeType);
+          return {
+            id: file.id,
+            name: file.name || file.originalName,
+            type: presentation.type,
+            mimeType,
+            modified: formatDate(file.updatedAt || file.createdAt),
+            size: formatSize(file.size),
+            icon: presentation.icon,
+            color: presentation.color,
+            bg: presentation.bg,
+          };
+        });
+        if (active) setSearchResults(mapped);
+      } catch (error) {
+        console.error("Failed to search files:", error);
+        if (active) {
+          setSearchResults([]);
+          setSearchError("Couldn't search files. Please try again.");
+        }
+      } finally {
+        if (active) setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [search, isTrashPage, isSharedLinksPage, isVersionsPage]);
+
+  const filteredFiles = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return files;
+    // The search endpoint searches files account-wide; folders are matched locally.
+    const matchingFolders = files.filter(
+      (file) => file.type === "Folder" && file.name.toLowerCase().includes(query),
+    );
+    return [...matchingFolders, ...searchResults];
+  }, [files, search, searchResults]);
 
   const filteredTrash = useMemo(
     () =>
@@ -955,10 +1039,8 @@ export default function DashboardPage() {
 
   const displayName = user?.name?.trim() || user?.email || "there";
   const profileName = user?.name?.trim() || user?.email || "User";
-  const isTrashPage = activePage === "Trash";
-  const isSharedLinksPage = activePage === "Shared Links";
-  const isVersionsPage = activePage === "Versions";
   const visibleFiles = filteredFiles;
+  const storageUsage = getStorageUsage(dashboardStats?.files.storageBytes);
 
   const pageTitle =
     activePage === "Dashboard"
@@ -1056,14 +1138,14 @@ export default function DashboardPage() {
                   <HardDrive size={17} className="text-blue-600" />
                   Storage
                 </div>
-                <span className="text-xs font-semibold text-blue-700">24%</span>
+                <span className="text-xs font-semibold text-blue-700">{storageUsage.percentage}%</span>
               </div>
               <div className="mb-2 flex items-baseline gap-1">
-                <span className="text-xl font-bold text-slate-900">2.4 GB</span>
+                <span className="text-xl font-bold text-slate-900">{storageUsage.used}</span>
                 <span className="text-xs text-slate-500">of 10 GB</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-slate-200">
-                <div className="h-full w-[24%] rounded-full bg-blue-600" />
+                <div className="h-full rounded-full bg-blue-600" style={{ width: `${Math.min(storageUsage.percentage, 100)}%` }} />
               </div>
               <p className="mt-3 text-xs leading-5 text-slate-500">
                 Your files are stored securely in your vault.
@@ -1176,8 +1258,8 @@ export default function DashboardPage() {
                 {[
                   {
                     label: "Total files",
-                    value: String(files.filter((file) => file.type !== "Folder").length),
-                    note: "In this preview",
+                    value: String(dashboardStats?.files.total ?? files.filter((file) => file.type !== "Folder").length),
+                    note: dashboardStatsError ? "Live count unavailable" : "Across your vault",
                     icon: FileText,
                     color: "text-blue-600",
                     bg: "bg-blue-50",
@@ -1192,8 +1274,8 @@ export default function DashboardPage() {
                   },
                   {
                     label: "Storage used",
-                    value: "2.4 GB",
-                    note: "24% of 10 GB",
+                    value: storageUsage.used,
+                    note: `${storageUsage.percentage}% of 10 GB`, 
                     icon: HardDrive,
                     color: "text-emerald-600",
                     bg: "bg-emerald-50",
@@ -1303,6 +1385,12 @@ export default function DashboardPage() {
                         Try again
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {searchError && !isTrashPage && !isSharedLinksPage && !isVersionsPage && (
+                  <div role="alert" className="mx-5 mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {searchError}
                   </div>
                 )}
 
@@ -1759,13 +1847,13 @@ export default function DashboardPage() {
                       </table>
                     </div>
 
-                    {loading && (
+                    {(loading || searchLoading) && (
                       <div className="px-5 py-10 text-center text-sm text-slate-500">
-                        Loading your files…
+                        {searchLoading ? "Searching your files…" : "Loading your files…"}
                       </div>
                     )}
 
-                    {!loading && !fileError && visibleFiles.length === 0 && (
+                    {!loading && !searchLoading && !fileError && !searchError && visibleFiles.length === 0 && (
                       <div className="px-5 py-14 text-center">
                         <Search size={28} className="mx-auto text-slate-300" />
                         <p className="mt-3 font-semibold text-slate-700">
@@ -1905,14 +1993,14 @@ export default function DashboardPage() {
                       <span className="text-sm font-medium">Your cloud storage</span>
                     </div>
                     <p className="mt-4 text-2xl font-bold">
-                      2.4 GB{" "}
+                      {storageUsage.used}{" "}
                       <span className="text-sm font-medium text-blue-100">/ 10 GB</span>
                     </p>
                     <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/20">
-                      <div className="h-full w-[24%] rounded-full bg-white" />
+                      <div className="h-full rounded-full bg-white" style={{ width: `${Math.min(storageUsage.percentage, 100)}%` }} />
                     </div>
                     <p className="mt-3 text-xs text-blue-100">
-                      You're using 24% of your available storage.
+                      You're using {storageUsage.percentage}% of your available storage.
                     </p>
                   </section>
                 </div>

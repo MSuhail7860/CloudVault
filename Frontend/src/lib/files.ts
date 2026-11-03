@@ -6,6 +6,34 @@ interface ApiResponse<T> {
   message?: string;
 }
 
+export interface FileSearchPagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface FileSearchResponse {
+  data: CloudFile[];
+  pagination: FileSearchPagination;
+}
+
+export interface DashboardStats {
+  files: {
+    total: number;
+    storageBytes: string;
+  };
+  trash: {
+    total: number;
+    storageBytes: string;
+  };
+  fileTypes: {
+    mimeType: string;
+    count: number;
+  }[];
+  recentFiles: CloudFile[];
+}
+
 export interface CloudFile {
   id: string;
   name: string;
@@ -54,6 +82,12 @@ export interface CloudFolder {
   updatedAt: string;
 }
 
+export async function getDashboardStats(): Promise<DashboardStats> {
+  const response = await api.get<ApiResponse<DashboardStats>>("/dashboard");
+
+  return response.data.data;
+}
+
 export async function listFiles(
   folderId?: string | null,
 ): Promise<CloudFile[]> {
@@ -64,6 +98,31 @@ export async function listFiles(
   });
 
   return response.data.data;
+}
+
+// File search API
+
+export async function searchCloudFiles(
+  query: string,
+  page = 1,
+  limit = 10,
+): Promise<FileSearchResponse> {
+  const response = await api.get<
+    ApiResponse<CloudFile[]> & {
+      pagination: FileSearchPagination;
+    }
+  >("/files/search", {
+    params: {
+      q: query,
+      page,
+      limit,
+    },
+  });
+
+  return {
+    data: response.data.data,
+    pagination: response.data.pagination,
+  };
 }
 
 export async function listFolders(
