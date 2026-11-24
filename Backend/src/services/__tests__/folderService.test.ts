@@ -5,6 +5,7 @@ vi.mock("../../config/database.js", () => ({
     folder: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      count: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -12,6 +13,8 @@ vi.mock("../../config/database.js", () => ({
     file: {
       findFirst: vi.fn(),
     },
+    $transaction: vi.fn(),
+    $executeRaw: vi.fn(),
   },
 }));
 
@@ -21,6 +24,7 @@ import {
   listFolders,
   deleteFolder,
   renameFolder,
+  moveFolder,
 } from "../folderService.js";
 
 const db = vi.mocked(prisma);
@@ -48,6 +52,12 @@ const expectAppError = async (
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(db.$executeRaw).mockResolvedValue(1 as never);
+  vi.mocked(db.folder.count).mockResolvedValue(0);
+  vi.mocked(db.$transaction).mockImplementation(
+    (async (callback: (transaction: unknown) => Promise<unknown>) =>
+      callback(db as never)) as never,
+  );
 });
 
 describe("createFolder", () => {
@@ -131,6 +141,26 @@ describe("createFolder", () => {
     expect(db.folder.create).not.toHaveBeenCalled();
   });
 
+  it("rejects folder names with path traversal characters", async () => {
+    await expectAppError(
+      createFolder({ name: "../evil", ownerId }),
+      "Folder name contains invalid characters",
+      400,
+    );
+    await expectAppError(
+      createFolder({ name: "nested/folder", ownerId }),
+      "Folder name contains invalid characters",
+      400,
+    );
+    await expectAppError(
+      createFolder({ name: "..", ownerId }),
+      "Folder name contains invalid characters",
+      400,
+    );
+
+    expect(db.folder.create).not.toHaveBeenCalled();
+  });
+
   it("rejects a parent folder that does not belong to the user", async () => {
     vi.mocked(db.folder.findFirst).mockResolvedValue(null);
 
@@ -153,6 +183,7 @@ describe("listFolders", () => {
     vi.mocked(db.folder.findMany).mockResolvedValue([
       folder,
     ] as never);
+    vi.mocked(db.folder.count).mockResolvedValue(1);
 
     const result = await listFolders(ownerId);
 
@@ -161,7 +192,9 @@ describe("listFolders", () => {
         ownerId,
         parentId: null,
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: 0,
+      take: 100,
       select: {
         id: true,
         name: true,
@@ -171,7 +204,13 @@ describe("listFolders", () => {
       },
     });
 
-    expect(result).toEqual([folder]);
+    expect(result.items).toEqual([folder]);
+    expect(result.pagination).toEqual({
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    });
   });
 
   it("lists child folders for a specified parent", async () => {
@@ -185,6 +224,7 @@ describe("listFolders", () => {
     vi.mocked(db.folder.findMany).mockResolvedValue([
       childFolder,
     ] as never);
+    vi.mocked(db.folder.count).mockResolvedValue(1);
 
     const result = await listFolders(ownerId, folderId);
 
@@ -193,7 +233,9 @@ describe("listFolders", () => {
         ownerId,
         parentId: folderId,
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: 0,
+      take: 100,
       select: {
         id: true,
         name: true,
@@ -203,7 +245,7 @@ describe("listFolders", () => {
       },
     });
 
-    expect(result).toEqual([childFolder]);
+    expect(result.items).toEqual([childFolder]);
   });
 
   it("returns an empty list when the user has no folders", async () => {
@@ -211,7 +253,33 @@ describe("listFolders", () => {
 
     const result = await listFolders(ownerId);
 
-    expect(result).toEqual([]);
+    expect(result.items).toEqual([]);
+    expect(result.pagination.total).toBe(0);
+  });
+
+  it("applies requested sorting and pagination", async () => {
+    vi.mocked(db.folder.count).mockResolvedValue(25);
+
+    const result = await listFolders(ownerId, null, {
+      page: 3,
+      limit: 5,
+      sortBy: "name",
+      sortOrder: "asc",
+    });
+
+    expect(db.folder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+        skip: 10,
+        take: 5,
+      }),
+    );
+    expect(result.pagination).toEqual({
+      page: 3,
+      limit: 5,
+      total: 25,
+      totalPages: 5,
+    });
   });
 });
 
@@ -371,6 +439,59 @@ describe("renameFolder", () => {
         name: "Projects",
       }),
       "Folder not found",
+      404,
+    );
+
+    expect(db.folder.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("moveFolder", () => {
+  it("moves an owned folder to another owned parent", async () => {
+    vi.mocked(db.folder.findMany).mockResolvedValue([
+      { id: folderId, name: "Documents", parentId: null },
+      { id: "destination", name: "Projects", parentId: null },
+    ] as never);
+    vi.mocked(db.folder.update).mockResolvedValue({
+      ...folder,
+      parentId: "destination",
+    } as never);
+
+    await expect(moveFolder({
+      folderId,
+      ownerId,
+      parentId: "destination",
+    })).resolves.toMatchObject({ id: folderId, parentId: "destination" });
+
+    expect(db.folder.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: folderId },
+      data: { parentId: "destination" },
+    }));
+  });
+
+  it("rejects moving a folder into itself or a descendant", async () => {
+    vi.mocked(db.folder.findMany).mockResolvedValue([
+      { id: folderId, name: "Documents", parentId: null },
+      { id: "child", name: "Child", parentId: folderId },
+    ] as never);
+
+    await expectAppError(
+      moveFolder({ folderId, ownerId, parentId: "child" }),
+      "A folder cannot be moved into itself or a descendant",
+      400,
+    );
+
+    expect(db.folder.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a destination owned by another user", async () => {
+    vi.mocked(db.folder.findMany).mockResolvedValue([
+      { id: folderId, name: "Documents", parentId: null },
+    ] as never);
+
+    await expectAppError(
+      moveFolder({ folderId, ownerId, parentId: "other-users-folder" }),
+      "Parent folder not found",
       404,
     );
 

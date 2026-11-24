@@ -1,0 +1,11 @@
+.git
+.env*
+node_modules
+dist
+coverage
+src/generated/prisma
+src/integration
+src/**/__tests__
+src/**/*.test.ts
+src/**/*.spec.ts
+*.log

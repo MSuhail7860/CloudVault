@@ -18,6 +18,26 @@ export interface FileSearchResponse {
   pagination: FileSearchPagination;
 }
 
+export interface FileListOptions {
+  page?: number;
+  limit?: number;
+  sortBy?: "name" | "size" | "createdAt" | "updatedAt" | "mimeType";
+  sortOrder?: "asc" | "desc";
+  mimeType?: string;
+}
+
+export interface FolderListOptions {
+  page?: number;
+  limit?: number;
+  sortBy?: "name" | "createdAt" | "updatedAt";
+  sortOrder?: "asc" | "desc";
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  pagination: FileSearchPagination;
+}
+
 export interface DashboardStats {
   files: {
     total: number;
@@ -91,13 +111,36 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 export async function listFiles(
   folderId?: string | null,
 ): Promise<CloudFile[]> {
-  const response = await api.get<ApiResponse<CloudFile[]>>("/files", {
+  const items: CloudFile[] = [];
+  let page = 1;
+
+  while (true) {
+    const result = await listFilesPage(folderId, { page, limit: 100 });
+    items.push(...result.items);
+    if (page >= result.pagination.totalPages) break;
+    page += 1;
+  }
+
+  return items;
+}
+
+export async function listFilesPage(
+  folderId?: string | null,
+  options: FileListOptions = {},
+): Promise<PaginatedResponse<CloudFile>> {
+  const response = await api.get<
+    ApiResponse<CloudFile[]> & { pagination: FileSearchPagination }
+  >("/files", {
     params: {
       folderId: folderId || undefined,
+      ...options,
     },
   });
 
-  return response.data.data;
+  return {
+    items: response.data.data,
+    pagination: response.data.pagination,
+  };
 }
 
 // File search API
@@ -106,6 +149,7 @@ export async function searchCloudFiles(
   query: string,
   page = 1,
   limit = 10,
+  options: Omit<FileListOptions, "page" | "limit"> = {},
 ): Promise<FileSearchResponse> {
   const response = await api.get<
     ApiResponse<CloudFile[]> & {
@@ -116,6 +160,7 @@ export async function searchCloudFiles(
       q: query,
       page,
       limit,
+      ...options,
     },
   });
 
@@ -128,18 +173,43 @@ export async function searchCloudFiles(
 export async function listFolders(
   parentId?: string | null,
 ): Promise<CloudFolder[]> {
-  const response = await api.get<ApiResponse<CloudFolder[]>>("/folders", {
+  const items: CloudFolder[] = [];
+  let page = 1;
+
+  while (true) {
+    const result = await listFoldersPage(parentId, { page, limit: 100 });
+    items.push(...result.items);
+    if (page >= result.pagination.totalPages) break;
+    page += 1;
+  }
+
+  return items;
+}
+
+export async function listFoldersPage(
+  parentId?: string | null,
+  options: FolderListOptions = {},
+): Promise<PaginatedResponse<CloudFolder>> {
+  const response = await api.get<
+    ApiResponse<CloudFolder[]> & { pagination: FileSearchPagination }
+  >("/folders", {
     params: {
       parentId: parentId || undefined,
+      ...options,
     },
   });
 
-  return response.data.data;
+  return {
+    items: response.data.data,
+    pagination: response.data.pagination,
+  };
 }
 
 export async function uploadFile(
   file: File,
   folderId?: string | null,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
 ): Promise<CloudFile> {
   const formData = new FormData();
   formData.append("file", file);
@@ -155,6 +225,12 @@ export async function uploadFile(
       headers: {
         "Content-Type": "multipart/form-data",
       },
+      onUploadProgress: (event) => {
+        if (event.total) {
+          onProgress?.(Math.round((event.loaded / event.total) * 100));
+        }
+      },
+      signal,
     },
   );
 
@@ -240,6 +316,18 @@ export async function restoreFileVersion(
   return response.data.data;
 }
 
+export async function downloadFileVersion(
+  fileId: string,
+  versionId: string,
+): Promise<Blob> {
+  const response = await api.get(
+    `/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/download`,
+    { responseType: "blob" },
+  );
+
+  return response.data as Blob;
+}
+
 export async function moveFileToTrash(fileId: string): Promise<void> {
   await api.delete(`/files/${encodeURIComponent(fileId)}`);
 }
@@ -264,6 +352,18 @@ export async function renameCloudFolder(
   const response = await api.patch<ApiResponse<CloudFolder>>(
     `/folders/${encodeURIComponent(folderId)}/rename`,
     { name },
+  );
+
+  return response.data.data;
+}
+
+export async function moveCloudFolder(
+  folderId: string,
+  parentId: string | null,
+): Promise<CloudFolder> {
+  const response = await api.patch<ApiResponse<CloudFolder>>(
+    `/folders/${encodeURIComponent(folderId)}/move`,
+    { parentId },
   );
 
   return response.data.data;
@@ -307,26 +407,93 @@ export async function previewCloudFile(fileId: string): Promise<Blob> {
 export interface ShareLink {
   id: string;
   fileId: string;
+  permission?: "VIEW" | "EDIT";
+  sharedWithEmail?: string | null;
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+}
+
+export interface ShareCreatedByMeItem extends ShareLink {
+  file: {
+    id: string;
+    name: string;
+    originalName: string;
+    mimeType: string;
+    size: string;
+  };
+  sharedWith?: {
+    id: string;
+    name: string | null;
+    email: string;
+  } | null;
+}
+
+export interface SharedWithMeItem {
+  id: string;
+  fileId: string;
+  permission: "VIEW" | "EDIT";
+  expiresAt: string | null;
+  createdAt: string;
+  file: {
+    id: string;
+    name: string;
+    originalName: string;
+    mimeType: string;
+    size: string;
+    owner: {
+      id: string;
+      name: string | null;
+      email: string;
+    };
+  };
 }
 
 export interface CreatedShareLink {
   id: string;
   fileId: string;
   token: string;
+  permission?: "VIEW" | "EDIT";
+  sharedWithEmail?: string | null;
   expiresAt: string | null;
   createdAt: string;
+}
+
+export interface ActivityItem {
+  id: string;
+  action: string;
+  resourceType: "FILE" | "FOLDER" | "SHARE";
+  resourceId: string | null;
+  resourceName: string;
+  details?: Record<string, unknown> | null;
+  createdAt: string;
+  user: {
+    id: string;
+    name: string | null;
+    email: string;
+  };
+}
+
+export interface ActivityPagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }
 
 export async function createShareLink(
   fileId: string,
   expiresAt?: string | null,
+  permission: "VIEW" | "EDIT" = "VIEW",
+  sharedWithEmail?: string | null,
 ): Promise<CreatedShareLink> {
   const response = await api.post<ApiResponse<CreatedShareLink>>(
     `/shares/files/${encodeURIComponent(fileId)}`,
-    { expiresAt: expiresAt ?? null },
+    {
+      expiresAt: expiresAt ?? null,
+      permission,
+      sharedWithEmail: sharedWithEmail ?? null,
+    },
   );
 
   return response.data.data;
@@ -342,8 +509,62 @@ export async function listShareLinks(
   return response.data.data;
 }
 
+export async function listSharesCreatedByMe(): Promise<ShareCreatedByMeItem[]> {
+  const response = await api.get<ApiResponse<ShareCreatedByMeItem[]>>(
+    "/shares/created-by-me",
+  );
+
+  return response.data.data;
+}
+
+export async function listSharesWithMe(): Promise<SharedWithMeItem[]> {
+  const response = await api.get<ApiResponse<SharedWithMeItem[]>>(
+    "/shares/with-me",
+  );
+
+  return response.data.data;
+}
+
+export async function updateSharePermission(
+  shareLinkId: string,
+  permission?: "VIEW" | "EDIT",
+  expiresAt?: string | null,
+): Promise<ShareLink> {
+  const response = await api.patch<ApiResponse<ShareLink>>(
+    `/shares/${encodeURIComponent(shareLinkId)}`,
+    { permission, expiresAt },
+  );
+
+  return response.data.data;
+}
+
 export async function revokeShareLink(
   shareLinkId: string,
 ): Promise<void> {
   await api.delete(`/shares/${encodeURIComponent(shareLinkId)}`);
+}
+
+export async function downloadSharedFileForUser(shareId: string): Promise<Blob> {
+  const response = await api.get(
+    `/shares/with-me/${encodeURIComponent(shareId)}/download`,
+    { responseType: "blob" },
+  );
+
+  return response.data as Blob;
+}
+
+export async function listActivities(
+  page = 1,
+  limit = 10,
+): Promise<{ data: ActivityItem[]; pagination: ActivityPagination }> {
+  const response = await api.get<
+    ApiResponse<ActivityItem[]> & { pagination: ActivityPagination }
+  >("/activities", {
+    params: { page, limit },
+  });
+
+  return {
+    data: response.data.data,
+    pagination: response.data.pagination,
+  };
 }

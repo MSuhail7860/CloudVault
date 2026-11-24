@@ -6,6 +6,10 @@ interface SearchFilesInput {
   query: string;
   page?: number;
   limit?: number;
+  folderId?: string | null;
+  mimeType?: string;
+  sortBy?: "name" | "size" | "createdAt" | "updatedAt" | "mimeType";
+  sortOrder?: "asc" | "desc";
 }
 
 const DEFAULT_PAGE = 1;
@@ -17,6 +21,10 @@ export const searchFiles = async ({
   query,
   page = DEFAULT_PAGE,
   limit = DEFAULT_LIMIT,
+  folderId,
+  mimeType,
+  sortBy = "createdAt",
+  sortOrder = "desc",
 }: SearchFilesInput) => {
   const normalizedQuery = query.trim();
 
@@ -24,7 +32,7 @@ export const searchFiles = async ({
     throw new AppError("Search query cannot be empty", 400);
   }
 
-  if (!Number.isInteger(page) || page < 1) {
+  if (!Number.isSafeInteger(page) || page < 1) {
     throw new AppError("Page must be a positive integer", 400);
   }
 
@@ -34,10 +42,27 @@ export const searchFiles = async ({
       400,
     );
   }
+  if (!Number.isSafeInteger((page - 1) * limit)) {
+    throw new AppError("Page is out of range", 400);
+  }
+  if (!["name", "size", "createdAt", "updatedAt", "mimeType"].includes(sortBy)) {
+    throw new AppError("Invalid sort field", 400);
+  }
+  if (sortOrder !== "asc" && sortOrder !== "desc") {
+    throw new AppError("sortOrder must be asc or desc", 400);
+  }
 
   const where = {
     ownerId,
     deletedAt: null,
+    ...(folderId !== undefined ? { folderId } : {}),
+    ...(mimeType
+      ? {
+          mimeType: mimeType.endsWith("/*")
+            ? { startsWith: mimeType.slice(0, -1) }
+            : mimeType,
+        }
+      : {}),
     name: {
       contains: normalizedQuery,
       mode: "insensitive" as const,
@@ -49,7 +74,7 @@ export const searchFiles = async ({
   const [files, total] = await Promise.all([
     prisma.file.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ [sortBy]: sortOrder }, { id: "asc" }],
       skip,
       take: limit,
       select: {

@@ -1,0 +1,120 @@
+name: cloudvault-production
+
+x-backend-environment: &backend-environment
+  NODE_ENV: production
+  PORT: "8000"
+  TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:?Set TRUST_PROXY_HOPS to the full trusted proxy hop count, including frontend Nginx}"
+  ALLOW_TEST_CLIENT_ISOLATION: "false"
+  FRONTEND_URL: "${FRONTEND_URL:?Set explicit HTTPS CORS/frontend origin(s)}"
+  EMAIL_PROVIDER: resend
+  EMAIL_FROM: "${EMAIL_FROM:?Set a verified production sender}"
+  RESEND_API_KEY: "${RESEND_API_KEY:?Inject the production email API key}"
+  DATABASE_URL: "${DATABASE_URL:?Inject the TLS-enabled production PostgreSQL URL}"
+  JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:?Inject a distinct access-token secret}"
+  JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:?Inject a distinct refresh-token secret}"
+  REDIS_ENABLED: "true"
+  REDIS_URL: "${REDIS_URL:?Inject the TLS-enabled production Redis URL}"
+  S3_ENDPOINT: "${S3_ENDPOINT:?Set the HTTPS production object-storage endpoint}"
+  S3_REGION: "${S3_REGION:?Set the production object-storage region}"
+  S3_BUCKET: "${S3_BUCKET:?Set the production bucket}"
+  S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID:?Inject least-privilege S3 credentials}"
+  S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:?Inject least-privilege S3 credentials}"
+
+services:
+  migrate:
+    build:
+      context: ../../Backend
+      dockerfile: Dockerfile
+      target: migrator
+    image: cloudvault-backend-migrator:production
+    environment:
+      <<: *backend-environment
+      DATABASE_URL: "${DATABASE_URL_UNPOOLED:?DATABASE_URL_UNPOOLED is required for migrations}"
+    networks:
+      - production-backend
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: ../../Backend
+      dockerfile: Dockerfile
+      target: runtime
+    image: cloudvault-backend:production
+    environment:
+      <<: *backend-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - production-edge
+      - production-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    image: cloudvault-backend:production
+    command: ["node", "dist/jobs/worker.js"]
+    environment:
+      <<: *backend-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - production-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8001/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ../../Frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    image: cloudvault-frontend:production
+    ports:
+      - "127.0.0.1:${FRONTEND_HOST_PORT:?Set a loopback-only reverse-proxy port}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - production-edge
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  production-edge:
+    driver: bridge
+  production-backend:
+    driver: bridge

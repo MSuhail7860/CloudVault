@@ -1,0 +1,6 @@
+.env
+.env.recovery
+.env.production
+/mail-capture/
+/mail-capture-recovery/
+/backups/

@@ -45,9 +45,17 @@ export const searchFiles = async (
       });
       return;
     }
+    if (q.length > 255) {
+      res.status(400).json({
+        success: false,
+        message: "Search query cannot exceed 255 characters",
+      });
+      return;
+    }
 
     const page = parsePositiveInteger(req.query.page);
     const limit = parsePositiveInteger(req.query.limit);
+    const { sortBy, sortOrder, mimeType, folderId } = req.query;
 
     if (page === null) {
       res.status(400).json({
@@ -73,11 +81,58 @@ export const searchFiles = async (
       return;
     }
 
+    const allowedSortBy = ["name", "size", "createdAt", "updatedAt", "mimeType"];
+    if (sortBy !== undefined && (
+      typeof sortBy !== "string" || !allowedSortBy.includes(sortBy)
+    )) {
+      res.status(400).json({
+        success: false,
+        message: "sortBy must be name, size, createdAt, updatedAt, or mimeType",
+      });
+      return;
+    }
+
+    if (
+      sortOrder !== undefined &&
+      sortOrder !== "asc" &&
+      sortOrder !== "desc"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "sortOrder must be asc or desc",
+      });
+      return;
+    }
+
+    if (mimeType !== undefined && (
+      typeof mimeType !== "string" ||
+      mimeType.length > 255 ||
+      !/^[\w.+-]+\/[\w.+*-]+$/.test(mimeType)
+    )) {
+      res.status(400).json({
+        success: false,
+        message: "mimeType must be a valid media type",
+      });
+      return;
+    }
+
+    if (folderId !== undefined && typeof folderId !== "string") {
+      res.status(400).json({
+        success: false,
+        message: "folderId must be a string",
+      });
+      return;
+    }
+
     const result = await searchFilesService({
       ownerId: req.userId,
       query: q,
       page,
       limit,
+      folderId: folderId as string | undefined,
+      mimeType: mimeType as string | undefined,
+      sortBy: sortBy as "name" | "size" | "createdAt" | "updatedAt" | "mimeType" | undefined,
+      sortOrder: sortOrder as "asc" | "desc" | undefined,
     });
 
     res.status(200).json({

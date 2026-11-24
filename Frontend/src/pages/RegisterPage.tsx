@@ -40,7 +40,7 @@ export default function RegisterPage() {
 
       navigate("/login", {
         replace: true,
-        state: { registered: true },
+        state: { registered: true, email: email.trim() },
       });
     } catch (err) {
       if (axios.isAxiosError(err)) {

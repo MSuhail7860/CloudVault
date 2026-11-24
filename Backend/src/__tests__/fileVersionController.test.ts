@@ -1,6 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
+const databaseMocks = vi.hoisted(() => ({
+  findUniqueUser: vi.fn(),
+}));
+
+vi.mock("../config/database.js", () => ({
+  prisma: {
+    user: {
+      findUnique: databaseMocks.findUniqueUser,
+    },
+  },
+}));
+
 vi.mock("../services/fileService.js", () => ({
   uploadFile: vi.fn(),
   listFiles: vi.fn(),
@@ -27,12 +39,14 @@ import {
   uploadFileVersion,
   listFileVersions,
   restoreFileVersion,
+  listFiles,
 } from "../services/fileService.js";
 import { createAccessToken } from "../utils/jwt.js";
 
 const uploadVersionMock = vi.mocked(uploadFileVersion);
 const listVersionsMock = vi.mocked(listFileVersions);
 const restoreVersionMock = vi.mocked(restoreFileVersion);
+const listFilesMock = vi.mocked(listFiles);
 
 const userId = "test-user-1";
 const fileId = "test-file-1";
@@ -42,10 +56,58 @@ let token: string;
 
 beforeEach(async () => {
   vi.resetAllMocks();
-  token = await createAccessToken(userId);
+  databaseMocks.findUniqueUser.mockResolvedValue({
+    id: userId,
+    accountStatus: "ACTIVE",
+    sessionVersion: 0,
+    emailVerifiedAt: new Date("2026-01-01T00:00:00.000Z"),
+  });
+  token = await createAccessToken(userId, 0);
 });
 
 describe("File versioning API", () => {
+  describe("GET /api/v1/files", () => {
+    it("rejects unsupported sort and MIME filter values", async () => {
+      const invalidSort = await request(app)
+        .get("/api/v1/files?sortBy=storageKey")
+        .set("Authorization", `Bearer ${token}`);
+      const invalidMimeType = await request(app)
+        .get("/api/v1/files?mimeType=not-a-media-type")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(invalidSort.status).toBe(400);
+      expect(invalidMimeType.status).toBe(400);
+      expect(listFilesMock).not.toHaveBeenCalled();
+    });
+
+    it("returns paginated files scoped to the authenticated user", async () => {
+      listFilesMock.mockResolvedValue({
+        items: [],
+        pagination: { page: 2, limit: 5, total: 6, totalPages: 2 },
+      } as never);
+
+      const response = await request(app)
+        .get("/api/v1/files?page=2&limit=5&sortBy=size&sortOrder=asc&mimeType=image%2F%2A")
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        success: true,
+        data: [],
+        pagination: { page: 2, limit: 5, total: 6, totalPages: 2 },
+      });
+      expect(listFilesMock).toHaveBeenCalledWith({
+        ownerId: userId,
+        folderId: null,
+        page: 2,
+        limit: 5,
+        sortBy: "size",
+        sortOrder: "asc",
+        mimeType: "image/*",
+      });
+    });
+  });
+
   describe("POST /api/v1/files/:id/versions", () => {
     it("returns 400 when no file is uploaded", async () => {
       const response = await request(app)
@@ -88,13 +150,14 @@ describe("File versioning API", () => {
         data: version,
       });
 
-      expect(uploadVersionMock).toHaveBeenCalledWith({
+      expect(uploadVersionMock).toHaveBeenCalledWith(expect.objectContaining({
         fileId,
         ownerId: userId,
         originalName: "report-v2.pdf",
         mimeType: "application/pdf",
         buffer: expect.any(Buffer),
-      });
+        abortSignal: expect.any(AbortSignal),
+      }));
     });
   });
 

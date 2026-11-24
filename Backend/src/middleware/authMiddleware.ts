@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { prisma } from "../config/database.js";
 import { verifyAccessToken } from "../utils/jwt.js";
 
 export interface AuthenticatedRequest extends Request {
@@ -31,7 +32,30 @@ export const authenticate = async (
   }
 
   try {
-    const { userId } = await verifyAccessToken(token);
+    const { userId, sessionVersion } = await verifyAccessToken(token);
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        accountStatus: true,
+        sessionVersion: true,
+        emailVerifiedAt: true,
+      },
+    });
+
+    if (
+      !user ||
+      user.accountStatus === "PENDING_DELETION" ||
+      !user.emailVerifiedAt ||
+      user.sessionVersion !== sessionVersion
+    ) {
+      res.status(401).json({
+        success: false,
+        message: "Invalid or expired access token",
+      });
+      return;
+    }
 
     req.userId = userId;
     next();

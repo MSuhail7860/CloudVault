@@ -55,7 +55,7 @@ describe("searchFiles", () => {
             mode: "insensitive",
           },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
         skip: 0,
         take: 10,
       }),
@@ -115,6 +115,56 @@ describe("searchFiles", () => {
       total: 25,
       totalPages: 5,
     });
+  });
+
+  it("combines folder, MIME type, and sort filters while excluding trashed files", async () => {
+    await searchFiles({
+      ownerId,
+      query: "report",
+      folderId: "folder-1",
+      mimeType: "image/*",
+      sortBy: "size",
+      sortOrder: "asc",
+      page: 2,
+      limit: 5,
+    });
+
+    expect(findManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          ownerId,
+          deletedAt: null,
+          folderId: "folder-1",
+          mimeType: { startsWith: "image/" },
+          name: { contains: "report", mode: "insensitive" },
+        },
+        orderBy: [{ size: "asc" }, { id: "asc" }],
+        skip: 5,
+        take: 5,
+      }),
+    );
+    expect(countMock).toHaveBeenCalledWith({
+      where: expect.objectContaining({ ownerId, deletedAt: null }),
+    });
+  });
+
+  it("rejects unsafe pagination offsets and invalid sort fields", async () => {
+    await expect(
+      searchFiles({
+        ownerId,
+        query: "report",
+        page: Number.MAX_SAFE_INTEGER,
+        limit: 100,
+      }),
+    ).rejects.toMatchObject({ message: "Page is out of range", statusCode: 400 });
+
+    await expect(
+      searchFiles({
+        ownerId,
+        query: "report",
+        sortBy: "ownerId" as never,
+      }),
+    ).rejects.toMatchObject({ message: "Invalid sort field", statusCode: 400 });
   });
 
   it("rejects an empty search query", async () => {

@@ -7,6 +7,7 @@ import filesRouter from "./files.js";
 import sharesRouter from "./shares.js";
 import sharedRouter from "./shared.js";
 import dashboardRouter from "./dashboard.js";
+import activitiesRouter from "./activities.js";
 
 const router = Router();
 
@@ -23,6 +24,7 @@ router.use("/files", filesRouter);
 router.use("/shares", sharesRouter);
 router.use("/shared", sharedRouter);
 router.use("/dashboard", dashboardRouter);
+router.use("/activities", activitiesRouter);
 
 // Temporary object storage connection test
 router.get("/storage/health", storageHealth);

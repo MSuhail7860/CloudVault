@@ -9,6 +9,7 @@ vi.mock("../../config/database.js", () => ({
       create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      count: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
@@ -17,8 +18,21 @@ vi.mock("../../config/database.js", () => ({
       findMany: vi.fn(),
       findFirst: vi.fn(),
     },
+    storageObjectTask: {
+      create: vi.fn(),
+      deleteMany: vi.fn(),
+      updateMany: vi.fn(),
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+      count: vi.fn(),
+    },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn(),
   },
+}));
+
+vi.mock("../../jobs/queues.js", () => ({
+  enqueueFileProcessingJob: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../storageService.js", () => ({
@@ -28,6 +42,7 @@ vi.mock("../storageService.js", () => ({
 }));
 
 import { prisma } from "../../config/database.js";
+import { enqueueFileProcessingJob } from "../../jobs/queues.js";
 import {
   uploadObject,
   downloadObject,
@@ -46,9 +61,11 @@ import {
   uploadFileVersion,
   listFileVersions,
   restoreFileVersion,
+  downloadFileVersion,
 } from "../fileService.js";
 
 const db = vi.mocked(prisma);
+const enqueueFileProcessing = vi.mocked(enqueueFileProcessingJob);
 const storageUpload = vi.mocked(uploadObject);
 const storageDownload = vi.mocked(downloadObject);
 const storageDelete = vi.mocked(deleteObject);
@@ -81,6 +98,19 @@ const appError = async (
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enqueueFileProcessing.mockResolvedValue(undefined);
+  vi.mocked(db.$executeRaw).mockResolvedValue(1 as never);
+  vi.mocked(db.file.count).mockResolvedValue(0);
+  vi.mocked(db.storageObjectTask.create).mockResolvedValue({
+    id: "reservation-1",
+  } as never);
+  vi.mocked(db.storageObjectTask.deleteMany).mockResolvedValue({
+    count: 1,
+  } as never);
+  vi.mocked(db.$transaction).mockImplementation(
+    (async (callback: (transaction: unknown) => Promise<unknown>) =>
+      callback(db as never)) as never,
+  );
 });
 
 describe("uploadFile", () => {
@@ -88,10 +118,10 @@ describe("uploadFile", () => {
     ownerId,
     originalName: " report.pdf ",
     mimeType: "application/pdf",
-    buffer: Buffer.from("test file"),
+    buffer: Buffer.from("%PDF-1.7\n"),
   };
 
-  it("uploads a file and creates its database record", async () => {
+  it("uploads a file, creates its database record, and enqueues processing", async () => {
     vi.mocked(db.file.create).mockResolvedValue({
       ...activeFile,
       name: "report.pdf",
@@ -126,6 +156,9 @@ describe("uploadFile", () => {
       }),
     );
 
+    expect(enqueueFileProcessing).toHaveBeenCalledOnce();
+    expect(enqueueFileProcessing).toHaveBeenCalledWith(fileId);
+
     expect(result).toBeDefined();
   });
 
@@ -133,6 +166,26 @@ describe("uploadFile", () => {
     await appError(
       uploadFile({ ...input, originalName: "   " }),
       "File name cannot be empty",
+      400,
+    );
+
+    expect(storageUpload).not.toHaveBeenCalled();
+  });
+
+  it("rejects filenames with path traversal characters", async () => {
+    await appError(
+      uploadFile({ ...input, originalName: "../evil.txt" }),
+      "File name contains invalid characters",
+      400,
+    );
+    await appError(
+      uploadFile({ ...input, originalName: "path/to/evil.txt" }),
+      "File name contains invalid characters",
+      400,
+    );
+    await appError(
+      uploadFile({ ...input, originalName: "evil\0.txt" }),
+      "File name contains invalid characters",
       400,
     );
 
@@ -172,6 +225,19 @@ describe("uploadFile", () => {
     expect(storageUpload).not.toHaveBeenCalled();
   });
 
+  it("rejects previewable file types whose content signature does not match", async () => {
+    await appError(
+      uploadFile({
+        ...input,
+        mimeType: "image/png",
+        buffer: Buffer.from("not an image"),
+      }),
+      "Image content does not match its declared type",
+      400,
+    );
+    expect(storageUpload).not.toHaveBeenCalled();
+  });
+
   it("rejects a folder that does not belong to the user", async () => {
     vi.mocked(db.folder.findFirst).mockResolvedValue(null);
 
@@ -194,35 +260,92 @@ describe("uploadFile", () => {
     await expect(uploadFile(input)).rejects.toBe(dbError);
 
     expect(storageUpload).toHaveBeenCalledOnce();
-    expect(storageDelete).toHaveBeenCalledWith(
-      storageUpload.mock.calls[0]![0].key,
+    expect(storageDelete).not.toHaveBeenCalled();
+    expect(db.storageObjectTask.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "reservation-1", status: "UPLOADING" },
+      }),
     );
+    expect(enqueueFileProcessing).not.toHaveBeenCalled();
+  });
+
+  it("schedules durable cleanup when the request aborts after storage succeeds", async () => {
+    const abortController = new AbortController();
+    storageUpload.mockImplementationOnce(async () => {
+      abortController.abort();
+    });
+
+    await expect(
+      uploadFile({ ...input, abortSignal: abortController.signal }),
+    ).rejects.toMatchObject({
+      statusCode: 408,
+      message: "Upload request timed out",
+    });
+
+    expect(db.file.create).not.toHaveBeenCalled();
+    expect(db.storageObjectTask.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "reservation-1", status: "UPLOADING" },
+      }),
+    );
+    expect(enqueueFileProcessing).not.toHaveBeenCalled();
+  });
+
+  it("keeps a persisted file when job enqueue fails and logs only safe metadata", async () => {
+    vi.mocked(db.file.create).mockResolvedValue({
+      ...activeFile,
+      name: "report.pdf",
+      originalName: "report.pdf",
+    } as never);
+    enqueueFileProcessing.mockRejectedValueOnce(
+      new Error("credential=must-not-be-logged"),
+    );
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(uploadFile(input)).resolves.toBeDefined();
+
+    expect(db.file.create).toHaveBeenCalledOnce();
+    expect(storageDelete).not.toHaveBeenCalled();
+    expect(errorLog.mock.calls.flat().join(" ")).not.toContain("must-not-be-logged");
+    errorLog.mockRestore();
   });
 
   it("preserves the database error if storage cleanup also fails", async () => {
     const dbError = new Error("Database unavailable");
 
     vi.mocked(db.file.create).mockRejectedValue(dbError);
-    storageDelete.mockRejectedValue(new Error("Storage unavailable"));
+    vi.mocked(db.storageObjectTask.updateMany).mockRejectedValue(
+      new Error("Database unavailable while scheduling cleanup"),
+    );
 
     await expect(uploadFile(input)).rejects.toBe(dbError);
+    expect(enqueueFileProcessing).not.toHaveBeenCalled();
   });
 });
 
 describe("listFiles", () => {
   it("lists active files and converts BigInt sizes to strings", async () => {
     vi.mocked(db.file.findMany).mockResolvedValue([activeFile] as never);
+    vi.mocked(db.file.count).mockResolvedValue(1);
 
     const result = await listFiles({ ownerId });
 
     expect(db.file.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { ownerId, folderId: null, deletedAt: null },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: 0,
+        take: 100,
       }),
     );
 
-    expect(result[0]!.size).toBe("1024");
+    expect(result.items[0]!.size).toBe("1024");
+    expect(result.pagination).toEqual({
+      page: 1,
+      limit: 100,
+      total: 1,
+      totalPages: 1,
+    });
   });
 
   it("filters by the requested folder", async () => {
@@ -239,6 +362,41 @@ describe("listFiles", () => {
         },
       }),
     );
+  });
+
+  it("combines MIME type, sorting, and pagination filters", async () => {
+    vi.mocked(db.file.findMany).mockResolvedValue([]);
+    await listFiles({
+      ownerId,
+      mimeType: "image/*",
+      page: 2,
+      limit: 5,
+      sortBy: "size",
+      sortOrder: "asc",
+    });
+
+    expect(db.file.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          ownerId,
+          folderId: null,
+          deletedAt: null,
+          mimeType: { startsWith: "image/" },
+        },
+        orderBy: [{ size: "asc" }, { id: "asc" }],
+        skip: 5,
+        take: 5,
+      }),
+    );
+  });
+
+  it("rejects pages whose offset exceeds the safe integer range", async () => {
+    await appError(
+      listFiles({ ownerId, page: Number.MAX_SAFE_INTEGER, limit: 100 }),
+      "Page is out of range",
+      400,
+    );
+    expect(db.file.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -546,7 +704,7 @@ describe("permanentlyDeleteFile", () => {
 
 describe("uploadFileVersion", () => {
   it("saves the previous content and updates the file to the new version", async () => {
-    const buffer = Buffer.from("new PDF content");
+    const buffer = Buffer.from("%PDF-1.7\nnew PDF content");
     const previousSize = BigInt(1024);
     const newSize = BigInt(buffer.length);
     const now = new Date();
@@ -585,6 +743,11 @@ describe("uploadFileVersion", () => {
           createdAt: now,
         }),
       },
+      storageObjectTask: {
+        create: vi.fn().mockResolvedValue({ id: "reservation-1" }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      $executeRaw: vi.fn().mockResolvedValue(1),
     };
 
     vi.mocked(db.$transaction).mockImplementation(
@@ -647,7 +810,7 @@ describe("uploadFileVersion", () => {
         ownerId,
         originalName: "report.pdf",
         mimeType: "application/pdf",
-        buffer: Buffer.from("new content"),
+        buffer: Buffer.from("%PDF-1.7\nnew content"),
       }),
       "File not found",
       404,
@@ -668,8 +831,12 @@ describe("uploadFileVersion", () => {
     } as never);
 
     storageUpload.mockResolvedValue(undefined);
-    vi.mocked(db.$transaction).mockRejectedValueOnce(databaseError);
-    storageDelete.mockResolvedValue(undefined);
+    vi.mocked(db.$transaction)
+      .mockImplementationOnce(
+        (async (callback: (transaction: unknown) => Promise<unknown>) =>
+          callback(db)) as never,
+      )
+      .mockRejectedValueOnce(databaseError);
 
     await expect(
       uploadFileVersion({
@@ -677,14 +844,58 @@ describe("uploadFileVersion", () => {
         ownerId,
         originalName: "report.pdf",
         mimeType: "application/pdf",
-        buffer: Buffer.from("new content"),
+        buffer: Buffer.from("%PDF-1.7\nnew content"),
       }),
     ).rejects.toBe(databaseError);
 
     expect(storageUpload).toHaveBeenCalledOnce();
-    expect(storageDelete).toHaveBeenCalledWith(
-      expect.stringMatching(new RegExp(`^${ownerId}/`)),
-    );
+    expect(storageDelete).not.toHaveBeenCalled();
+    expect(db.storageObjectTask.updateMany).toHaveBeenCalled();
+  });
+
+  describe("downloadFileVersion", () => {
+    it("downloads a specific historical version of an active file", async () => {
+      vi.mocked(db.file.findFirst).mockResolvedValue({
+        id: "file-1",
+        name: "test.txt",
+        originalName: "test.txt",
+      } as never);
+
+      vi.mocked(db.fileVersion.findFirst).mockResolvedValue({
+        id: "version-1",
+        version: 1,
+        mimeType: "text/plain",
+        size: 50n,
+        storageKey: "user-1/old-key",
+      } as never);
+
+      const mockBody = {
+        transformToByteArray: async () => new Uint8Array(Buffer.from("old")),
+      };
+      storageDownload.mockResolvedValueOnce({ Body: mockBody } as never);
+
+      const result = await downloadFileVersion({
+        fileId: "file-1",
+        versionId: "version-1",
+        ownerId: "user-1",
+      });
+
+      expect(result.version.version).toBe(1);
+      expect(result.file.name).toBe("test.txt");
+      expect(storageDownload).toHaveBeenCalledWith("user-1/old-key");
+    });
+
+    it("rejects when the file is not found or not owned by user", async () => {
+      vi.mocked(db.file.findFirst).mockResolvedValue(null);
+
+      await expect(
+        downloadFileVersion({
+          fileId: "file-1",
+          versionId: "version-1",
+          ownerId: "user-1",
+        }),
+      ).rejects.toMatchObject({ statusCode: 404 });
+    });
   });
 });
 
@@ -797,6 +1008,11 @@ describe("restoreFileVersion", () => {
           createdAt: now,
         }),
       },
+      storageObjectTask: {
+        create: vi.fn().mockResolvedValue({ id: "reservation-1" }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      $executeRaw: vi.fn().mockResolvedValue(1),
     };
 
     vi.mocked(db.$transaction).mockImplementation(
@@ -917,8 +1133,12 @@ describe("restoreFileVersion", () => {
     } as never);
 
     storageUpload.mockResolvedValue(undefined);
-    vi.mocked(db.$transaction).mockRejectedValueOnce(databaseError);
-    storageDelete.mockResolvedValue(undefined);
+    vi.mocked(db.$transaction)
+      .mockImplementationOnce(
+        (async (callback: (transaction: unknown) => Promise<unknown>) =>
+          callback(db)) as never,
+      )
+      .mockRejectedValueOnce(databaseError);
 
     await expect(
       restoreFileVersion({
@@ -929,8 +1149,52 @@ describe("restoreFileVersion", () => {
     ).rejects.toBe(databaseError);
 
     expect(storageUpload).toHaveBeenCalledOnce();
-    expect(storageDelete).toHaveBeenCalledWith(
-      expect.stringMatching(new RegExp(`^${ownerId}/`)),
-    );
+    expect(storageDelete).not.toHaveBeenCalled();
+    expect(db.storageObjectTask.updateMany).toHaveBeenCalled();
+  });
+
+  describe("downloadFileVersion", () => {
+    it("downloads a specific historical version of an active file", async () => {
+      vi.mocked(db.file.findFirst).mockResolvedValue({
+        id: "file-1",
+        name: "test.txt",
+        originalName: "test.txt",
+      } as never);
+
+      vi.mocked(db.fileVersion.findFirst).mockResolvedValue({
+        id: "version-1",
+        version: 1,
+        mimeType: "text/plain",
+        size: 50n,
+        storageKey: "user-1/old-key",
+      } as never);
+
+      const mockBody = {
+        transformToByteArray: async () => new Uint8Array(Buffer.from("old")),
+      };
+      storageDownload.mockResolvedValueOnce({ Body: mockBody } as never);
+
+      const result = await downloadFileVersion({
+        fileId: "file-1",
+        versionId: "version-1",
+        ownerId: "user-1",
+      });
+
+      expect(result.version.version).toBe(1);
+      expect(result.file.name).toBe("test.txt");
+      expect(storageDownload).toHaveBeenCalledWith("user-1/old-key");
+    });
+
+    it("rejects when the file is not found or not owned by user", async () => {
+      vi.mocked(db.file.findFirst).mockResolvedValue(null);
+
+      await expect(
+        downloadFileVersion({
+          fileId: "file-1",
+          versionId: "version-1",
+          ownerId: "user-1",
+        }),
+      ).rejects.toMatchObject({ statusCode: 404 });
+    });
   });
 });

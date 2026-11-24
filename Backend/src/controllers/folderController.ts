@@ -5,7 +5,15 @@ import {
   listFolders as listFoldersService,
   deleteFolder as deleteFolderService,
   renameFolder as renameFolderService,
+  moveFolder as moveFolderService,
 } from "../services/folderService.js";
+
+const parsePositiveInteger = (value: unknown): number | undefined | null => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+};
 
 // POST /api/v1/folders
 export const createFolder = async (
@@ -74,16 +82,64 @@ export const listFolders = async (
       return;
     }
 
-    const parentId =
-      typeof req.query.parentId === "string" && req.query.parentId.trim()
-        ? req.query.parentId
-        : null;
+    const { parentId, sortBy, sortOrder, page: rawPage, limit: rawLimit } = req.query;
 
-    const folders = await listFoldersService(req.userId, parentId);
+    if (parentId !== undefined && typeof parentId !== "string") {
+      res.status(400).json({
+        success: false,
+        message: "parentId must be a string",
+      });
+      return;
+    }
+
+    const page = parsePositiveInteger(rawPage);
+    const limit = parsePositiveInteger(rawLimit);
+    if (page === null || limit === null || (limit !== undefined && limit > 100)) {
+      res.status(400).json({
+        success: false,
+        message: "page and limit must be positive integers; limit cannot exceed 100",
+      });
+      return;
+    }
+
+    const allowedSortBy = ["name", "createdAt", "updatedAt"];
+    if (sortBy !== undefined && (
+      typeof sortBy !== "string" || !allowedSortBy.includes(sortBy)
+    )) {
+      res.status(400).json({
+        success: false,
+        message: "sortBy must be name, createdAt, or updatedAt",
+      });
+      return;
+    }
+
+    if (
+      sortOrder !== undefined &&
+      sortOrder !== "asc" &&
+      sortOrder !== "desc"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "sortOrder must be asc or desc",
+      });
+      return;
+    }
+
+    const result = await listFoldersService(
+      req.userId,
+      typeof parentId === "string" && parentId.trim() ? parentId : null,
+      {
+        page,
+        limit,
+        sortBy: sortBy as "name" | "createdAt" | "updatedAt" | undefined,
+        sortOrder: sortOrder as "asc" | "desc" | undefined,
+      },
+    );
 
     res.status(200).json({
       success: true,
-      data: folders,
+      data: result.items,
+      pagination: result.pagination,
     });
   } catch (error) {
     next(error);
@@ -172,6 +228,58 @@ export const renameFolder = async (
 
     res.status(200).json({
       success: true,
+      data: folder,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const moveFolder = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const folderId = req.params.folderId;
+    const { parentId } = req.body ?? {};
+
+    if (typeof folderId !== "string" || !folderId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid folder ID is required",
+      });
+      return;
+    }
+
+    if (
+      parentId !== null &&
+      (typeof parentId !== "string" || !parentId.trim())
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "parentId must be a valid folder ID or null",
+      });
+      return;
+    }
+
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const folder = await moveFolderService({
+      folderId,
+      ownerId: req.userId,
+      parentId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Folder moved successfully",
       data: folder,
     });
   } catch (error) {

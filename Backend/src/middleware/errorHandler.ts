@@ -9,7 +9,7 @@ type BodyParserError = SyntaxError & {
 
 export const errorHandler = (
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response,
   next: NextFunction,
 ): void => {
@@ -50,7 +50,14 @@ export const errorHandler = (
   // Handle known application errors.
   if (err instanceof AppError) {
     if (!err.isOperational) {
-      console.error(err);
+      console.error(
+        JSON.stringify({
+          event: "non_operational_app_error",
+          requestId: req.id,
+          errorName: err.name,
+          message: err.message,
+        }),
+      );
     }
 
     res.status(err.statusCode).json({
@@ -63,7 +70,14 @@ export const errorHandler = (
   }
 
   // Handle unexpected server errors.
-  console.error(err);
+  console.error(
+    JSON.stringify({
+      event: "unexpected_server_error",
+      requestId: req.id,
+      errorName: err.name,
+      message: err.message,
+    }),
+  );
 
   res.status(500).json({
     success: false,

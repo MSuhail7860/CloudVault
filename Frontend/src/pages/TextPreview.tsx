@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 
 type TextPreviewProps = {
-  url: string;
+  blob: Blob;
 };
 
-export default function TextPreview({ url }: TextPreviewProps) {
+export default function TextPreview({ blob }: TextPreviewProps) {
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -12,21 +12,14 @@ export default function TextPreview({ url }: TextPreviewProps) {
   useEffect(() => {
     let active = true;
 
-    setContent("");
-    setError("");
-    setLoading(true);
-
-    fetch(url)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Could not read this file.");
-        }
-
-        return response.text();
-      })
+    blob.text()
       .then((text) => {
         if (active) {
-          setContent(text);
+          if (text.includes("\0")) {
+            setError("This file does not contain valid plain text.");
+          } else {
+            setContent(text);
+          }
           setLoading(false);
         }
       })
@@ -40,7 +33,7 @@ export default function TextPreview({ url }: TextPreviewProps) {
     return () => {
       active = false;
     };
-  }, [url]);
+  }, [blob]);
 
   if (error) {
     return (

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Cloud, Eye, EyeOff, LockKeyhole, Mail } from "lucide-react";
-import { loginUser } from "../lib/auth";
+import { loginUser, resendEmailVerification } from "../lib/auth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -13,9 +13,19 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [verificationNotice, setVerificationNotice] = useState("");
+  const [resendingVerification, setResendingVerification] = useState(false);
 
   const registered = Boolean(
     (location.state as { registered?: boolean } | null)?.registered,
+  );
+  const registeredEmail = (location.state as { email?: string } | null)?.email;
+  const passwordChanged = Boolean(
+    (location.state as { passwordChanged?: boolean } | null)?.passwordChanged,
+  );
+  const accountDeletionScheduled = Boolean(
+    (location.state as { accountDeletionScheduled?: boolean } | null)
+      ?.accountDeletionScheduled,
   );
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -66,7 +76,27 @@ export default function LoginPage() {
                 role="status"
                 className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"
               >
-                Account created successfully. You can now sign in.
+                Account created. Check your email for a verification link, then
+                sign in. You can resend it below if needed.
+              </div>
+            )}
+
+            {passwordChanged && (
+              <div
+                role="status"
+                className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"
+              >
+                Password changed successfully. Please sign in again.
+              </div>
+            )}
+
+            {accountDeletionScheduled && (
+              <div
+                role="status"
+                className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200"
+              >
+                Account deletion has been scheduled. Your files and related
+                data will be removed in the background.
               </div>
             )}
 
@@ -78,6 +108,40 @@ export default function LoginPage() {
                 {error}
               </div>
             )}
+
+            {verificationNotice && (
+              <div
+                role="status"
+                className="mt-4 rounded-xl border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-blue-200"
+              >
+                {verificationNotice}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={
+                resendingVerification || !(registeredEmail || email.trim())
+              }
+              onClick={async () => {
+                setResendingVerification(true);
+                try {
+                  await resendEmailVerification(registeredEmail || email.trim());
+                  setVerificationNotice(
+                    "If an eligible account exists, a verification message will be sent.",
+                  );
+                } catch {
+                  setVerificationNotice(
+                    "Unable to request a verification message. Try again later.",
+                  );
+                } finally {
+                  setResendingVerification(false);
+                }
+              }}
+              className="mt-4 text-sm font-semibold text-blue-400 hover:text-blue-300 disabled:opacity-60"
+            >
+              {resendingVerification ? "Sending…" : "Resend verification email"}
+            </button>
 
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
               <div>

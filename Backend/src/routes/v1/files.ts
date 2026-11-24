@@ -12,10 +12,14 @@ import {
   uploadFileVersion,
   listFileVersions,
   restoreFileVersion,
+  downloadFileVersion,
 } from "../../controllers/fileController.js";
 import { searchFiles } from "../../controllers/fileSearchController.js";
 import { authenticate } from "../../middleware/authMiddleware.js";
-import { upload } from "../../middleware/uploadMiddleware.js";
+import {
+  upload,
+  uploadAdmission,
+} from "../../middleware/uploadMiddleware.js";
 
 const router = Router();
 
@@ -38,7 +42,12 @@ router.delete("/:id/permanent", permanentlyDeleteFile);
 router.get("/:id/versions", listFileVersions);
 
 // POST /api/v1/files/:id/versions
-router.post("/:id/versions", upload.single("file"), uploadFileVersion);
+router.post(
+  "/:id/versions",
+  uploadAdmission,
+  upload.single("file"),
+  uploadFileVersion,
+);
 
 // POST /api/v1/files/:id/versions/:versionId/restore
 router.post(
@@ -46,11 +55,22 @@ router.post(
   restoreFileVersion,
 );
 
+// GET /api/v1/files/:id/versions/:versionId/download
+router.get(
+  "/:id/versions/:versionId/download",
+  downloadFileVersion,
+);
+
 // GET /api/v1/files
 router.get("/", listFiles);
 
 // POST /api/v1/files/upload
-router.post("/upload", upload.single("file"), uploadFile);
+router.post(
+  "/upload",
+  uploadAdmission,
+  upload.single("file"),
+  uploadFile,
+);
 
 // GET /api/v1/files/:id/download
 router.get("/:id/download", downloadFile);

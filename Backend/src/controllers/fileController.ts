@@ -13,6 +13,7 @@ import {
   uploadFileVersion as uploadFileVersionService,
   listFileVersions as listFileVersionsService,
   restoreFileVersion as restoreFileVersionService,
+  downloadFileVersion as downloadFileVersionService,
 } from "../services/fileService.js";
 
 type UploadedFile = {
@@ -23,6 +24,15 @@ type UploadedFile = {
 
 type FileUploadRequest = AuthenticatedRequest & {
   file?: UploadedFile;
+  uploadAbortSignal?: AbortSignal;
+  uploadTimedOut?: boolean;
+};
+
+const parsePositiveInteger = (value: unknown): number | undefined | null => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 };
 
 // Upload a file.
@@ -32,6 +42,15 @@ export const uploadFile = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
+    if (req.uploadAbortSignal?.aborted) {
+      if (!res.headersSent) {
+        res.status(408).json({
+          success: false,
+          message: "Upload request timed out",
+        });
+      }
+      return;
+    }
     if (!req.userId) {
       res.status(401).json({
         success: false,
@@ -68,6 +87,7 @@ export const uploadFile = async (
       mimeType: req.file.mimetype,
       buffer: req.file.buffer,
       folderId: folderId || null,
+      abortSignal: req.uploadAbortSignal,
     });
 
     res.status(201).json({
@@ -79,6 +99,9 @@ export const uploadFile = async (
       },
     });
   } catch (error) {
+    if (req.uploadTimedOut || (req.uploadAbortSignal?.aborted && res.headersSent)) {
+      return;
+    }
     next(error);
   }
 };
@@ -98,7 +121,8 @@ export const listFiles = async (
       return;
     }
 
-    const { folderId } = req.query;
+    const { folderId, sortBy, sortOrder, mimeType, page: rawPage, limit: rawLimit } =
+      req.query;
 
     if (folderId !== undefined && typeof folderId !== "string") {
       res.status(400).json({
@@ -108,15 +132,66 @@ export const listFiles = async (
       return;
     }
 
-    const files = await listFilesService({
+    const page = parsePositiveInteger(rawPage);
+    const limit = parsePositiveInteger(rawLimit);
+    if (page === null || limit === null || (limit !== undefined && limit > 100)) {
+      res.status(400).json({
+        success: false,
+        message: "page and limit must be positive integers; limit cannot exceed 100",
+      });
+      return;
+    }
+
+    const allowedSortBy = ["name", "size", "createdAt", "updatedAt", "mimeType"];
+    if (sortBy !== undefined && (
+      typeof sortBy !== "string" || !allowedSortBy.includes(sortBy)
+    )) {
+      res.status(400).json({
+        success: false,
+        message: "sortBy must be name, size, createdAt, updatedAt, or mimeType",
+      });
+      return;
+    }
+
+    if (
+      sortOrder !== undefined &&
+      sortOrder !== "asc" &&
+      sortOrder !== "desc"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "sortOrder must be asc or desc",
+      });
+      return;
+    }
+
+    if (mimeType !== undefined && (
+      typeof mimeType !== "string" ||
+      mimeType.length > 255 ||
+      !/^[\w.+-]+\/[\w.+*-]+$/.test(mimeType)
+    )) {
+      res.status(400).json({
+        success: false,
+        message: "mimeType must be a valid media type",
+      });
+      return;
+    }
+
+    const result = await listFilesService({
       ownerId: req.userId,
       folderId: folderId || null,
+      page,
+      limit,
+      sortBy: sortBy as "name" | "size" | "createdAt" | "updatedAt" | "mimeType" | undefined,
+      sortOrder: sortOrder as "asc" | "desc" | undefined,
+      mimeType: mimeType as string | undefined,
     });
 
     res.status(200).json({
       success: true,
       message: "Files retrieved successfully",
-      data: files,
+      data: result.items,
+      pagination: result.pagination,
     });
   } catch (error) {
     next(error);
@@ -433,6 +508,15 @@ export const uploadFileVersion = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
+    if (req.uploadAbortSignal?.aborted) {
+      if (!res.headersSent) {
+        res.status(408).json({
+          success: false,
+          message: "Upload request timed out",
+        });
+      }
+      return;
+    }
     if (!req.userId) {
       res.status(401).json({
         success: false,
@@ -465,6 +549,7 @@ export const uploadFileVersion = async (
       originalName: req.file.originalname,
       mimeType: req.file.mimetype,
       buffer: req.file.buffer,
+      abortSignal: req.uploadAbortSignal,
     });
 
     res.status(201).json({
@@ -473,6 +558,9 @@ export const uploadFileVersion = async (
       data: result,
     });
   } catch (error) {
+    if (req.uploadTimedOut || (req.uploadAbortSignal?.aborted && res.headersSent)) {
+      return;
+    }
     next(error);
   }
 };
@@ -562,6 +650,65 @@ export const restoreFileVersion = async (
       message: "File version restored successfully",
       data: result,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Download a specific historical version of an existing file.
+export const downloadFileVersion = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+      return;
+    }
+
+    const fileId = req.params.id;
+    const versionId = req.params.versionId;
+
+    if (typeof fileId !== "string" || !fileId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid file ID is required",
+      });
+      return;
+    }
+
+    if (typeof versionId !== "string" || !versionId.trim()) {
+      res.status(400).json({
+        success: false,
+        message: "A valid version ID is required",
+      });
+      return;
+    }
+
+    const { version, file, object } = await downloadFileVersionService({
+      fileId,
+      versionId,
+      ownerId: req.userId,
+    });
+
+    if (!object.Body) {
+      throw new Error("File content is unavailable in storage.");
+    }
+
+    const bytes = await object.Body.transformToByteArray();
+
+    res.status(200);
+    res.setHeader(
+      "Content-Type",
+      version.mimeType || "application/octet-stream",
+    );
+    res.setHeader("Content-Length", bytes.byteLength);
+    res.attachment(`${file.name}-v${version.version}`);
+    res.send(Buffer.from(bytes));
   } catch (error) {
     next(error);
   }

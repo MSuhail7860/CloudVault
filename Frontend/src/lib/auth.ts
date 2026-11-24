@@ -3,6 +3,7 @@ import { api, tokenStorage } from "./api";
 export interface User {
   id: string;
   email: string;
+  emailVerifiedAt: string | null;
   name: string | null;
   createdAt: string;
   updatedAt: string;
@@ -29,13 +30,8 @@ export async function registerUser(input: {
   name: string;
   email: string;
   password: string;
-}): Promise<User> {
-  const response = await api.post<ApiResponse<User>>(
-    "/auth/register",
-    input,
-  );
-
-  return response.data.data;
+}): Promise<void> {
+  await api.post<{ success: boolean }>("/auth/register", input);
 }
 
 export async function loginUser(input: {
@@ -58,6 +54,43 @@ export async function getCurrentUser(): Promise<User> {
   const response = await api.get<ApiResponse<User>>("/auth/me");
 
   return response.data.data;
+}
+
+export async function resendEmailVerification(email: string): Promise<void> {
+  await api.post("/auth/verification/resend", { email });
+}
+
+export async function verifyEmail(
+  token: string,
+  password: string,
+): Promise<void> {
+  await api.post("/auth/verification/verify", { token, password });
+}
+
+export async function updateCurrentUser(name: string): Promise<User> {
+  const response = await api.patch<ApiResponse<User>>("/auth/me", { name });
+
+  return response.data.data;
+}
+
+export async function changePassword(input: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<void> {
+  await api.patch<{ success: boolean; message?: string }>(
+    "/auth/password",
+    input,
+  );
+}
+
+export async function deleteCurrentAccount(
+  currentPassword: string,
+): Promise<number> {
+  const response = await api.delete<{ success: boolean; message?: string }>("/auth/me", {
+    data: { currentPassword },
+  });
+
+  return response.status;
 }
 
 export async function refreshSession(): Promise<void> {

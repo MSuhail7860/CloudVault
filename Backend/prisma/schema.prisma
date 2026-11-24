@@ -7,18 +7,83 @@ datasource db {
   provider = "postgresql"
 }
 
-model User {
-  id            String         @id @default(uuid())
-  email         String         @unique
-  passwordHash  String
-  name          String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+enum AccountStatus {
+  ACTIVE
+  PENDING_DELETION
+}
 
-  refreshTokens RefreshToken[]
-  files         File[]
-  folders       Folder[]
-  shareLinks    ShareLink[]    @relation("ShareLinkCreator")
+enum AccountDeletionTaskStatus {
+  PENDING
+  PROCESSING
+  FAILED
+}
+
+enum StorageObjectTaskStatus {
+  UPLOADING
+  PENDING_CLEANUP
+  PROCESSING
+}
+
+model User {
+  id                  String        @id @default(uuid())
+  email               String        @unique
+  emailVerifiedAt     DateTime?
+  passwordHash        String
+  name                String?
+  sessionVersion      Int           @default(0)
+  accountStatus       AccountStatus @default(ACTIVE)
+  deletionRequestedAt DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  refreshTokens          RefreshToken[]
+  emailVerificationToken EmailVerificationToken?
+  files                  File[]
+  folders                Folder[]
+  shareLinks             ShareLink[]             @relation("ShareLinkCreator")
+  receivedShares         ShareLink[]             @relation("ShareLinkRecipient")
+  activities             Activity[]
+  accountDeletionTask    AccountDeletionTask?
+  storageObjectTasks     StorageObjectTask[]
+
+  @@index([accountStatus])
+}
+
+model AccountDeletionTask {
+  id            String                    @id @default(uuid())
+  userId        String                    @unique
+  status        AccountDeletionTaskStatus @default(PENDING)
+  attempts      Int                       @default(0)
+  nextAttemptAt DateTime                  @default(now())
+  leaseUntil    DateTime?
+  claimToken    String?                   @unique
+  lastFailureCode String?
+  lastFailureAt DateTime?
+  failedAt      DateTime?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+model StorageObjectTask {
+  id            String                  @id @default(uuid())
+  userId        String
+  storageKey    String                  @unique
+  status        StorageObjectTaskStatus @default(UPLOADING)
+  attempts      Int                     @default(0)
+  nextAttemptAt DateTime                @default(now())
+  leaseUntil    DateTime?
+  claimToken    String?                 @unique
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, nextAttemptAt])
+  @@index([status, nextAttemptAt])
 }
 
 model RefreshToken {
@@ -32,6 +97,20 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id         String    @id @default(uuid())
+  tokenHash  String    @unique
+  userId     String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([expiresAt])
 }
 
@@ -54,17 +133,19 @@ model Folder {
 }
 
 model File {
-  id           String    @id @default(uuid())
-  name         String
-  originalName String
-  storageKey   String    @unique
-  mimeType     String
-  size         BigInt
-  ownerId      String
-  folderId     String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  deletedAt    DateTime?
+  id               String    @id @default(uuid())
+  name             String
+  originalName     String
+  storageKey       String    @unique
+  mimeType         String
+  size             BigInt
+  ownerId          String
+  folderId         String?
+  processingStatus String?   @default("COMPLETED")
+  metadata         Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
 
   owner      User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   folder     Folder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -94,18 +175,41 @@ model FileVersion {
 }
 
 model ShareLink {
-  id          String    @id @default(uuid())
-  tokenHash   String    @unique
-  fileId      String
-  createdById String
-  expiresAt   DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
+  id              String    @id @default(uuid())
+  tokenHash       String    @unique
+  fileId          String
+  createdById     String
+  permission      String    @default("VIEW")
+  sharedWithEmail String?
+  sharedWithId    String?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
 
-  file      File @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  createdBy User @relation("ShareLinkCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  file       File  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  createdBy  User  @relation("ShareLinkCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  sharedWith User? @relation("ShareLinkRecipient", fields: [sharedWithId], references: [id], onDelete: SetNull)
 
   @@index([fileId])
   @@index([createdById])
+  @@index([sharedWithId])
+  @@index([sharedWithEmail])
   @@index([expiresAt])
+}
+
+model Activity {
+  id           String   @id @default(uuid())
+  userId       String
+  action       String
+  resourceType String
+  resourceId   String?
+  resourceName String
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([resourceId])
 }
